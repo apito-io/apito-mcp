@@ -1,0 +1,17 @@
+export const dentalAssessmentFields = [
+    "date",
+    "chief_complaint [ complaint duration unit location ]",
+    "medical_dental_history { past_diseases medications allergies habits previous_dental_treatments family_dental_history other_medical_conditions }",
+    "extra_oral_examination { face_symmetry jaw_joint swelling lymph_nodes tmj notes }",
+    "intra_oral_soft_tissue { gums tongue cheeks lips soft_palate pharynx oral_mucosa notes }",
+    "hard_tissue_examination { cavities fractures alignment bite occlusion missing_teeth restorations mobility notes }",
+    "periodontal_assessment { pocket_depth bleeding plaque bone_loss gingival_recession mobility notes }",
+    "radiographic_assessment { bitewing periapical opg cbct findings date recommendations }",
+    "diagnostic_tests { vitality percussion mobility occlusion other_tests notes }",
+    "diagnosis { primary_diagnosis secondary_diagnosis }",
+    "treatment_planning { scaling filling rct extraction braces implants other notes }",
+    "medicine { unit name instruction duration frequency strength }",
+    "advice",
+    "investigations",
+    "prescription_diagnosis"
+  ];
