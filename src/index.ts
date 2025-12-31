@@ -380,6 +380,38 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                         required: ['model_name'],
                     },
                 },
+                {
+                    name: 'add_relation',
+                    description: 'Create a relation between two models. Relations define how models are connected (e.g., a Patient has many DentalAssessments, or a DentalAssessment belongs to one Patient).',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            from_model: {
+                                type: 'string',
+                                description: 'Source model name (the model that will have the relation field)',
+                            },
+                            to_model: {
+                                type: 'string',
+                                description: 'Target model name (the model being related to)',
+                            },
+                            forward_connection_type: {
+                                type: 'string',
+                                description: 'Forward relation type from source to target. Valid values: "has_many" (one-to-many) or "has_one" (one-to-one)',
+                                enum: ['has_many', 'has_one'],
+                            },
+                            reverse_connection_type: {
+                                type: 'string',
+                                description: 'Reverse relation type from target back to source. Valid values: "has_many" (one-to-many) or "has_one" (one-to-one)',
+                                enum: ['has_many', 'has_one'],
+                            },
+                            known_as: {
+                                type: 'string',
+                                description: 'Optional alternate identifier for this relation (custom name for the relation field)',
+                            },
+                        },
+                        required: ['from_model', 'to_model', 'forward_connection_type', 'reverse_connection_type'],
+                    },
+                },
             ],
         });
         this.server.setRequestHandler(ListToolsRequestSchema, this.listToolsHandler);
@@ -749,6 +781,31 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                 {
                     type: 'text',
                     text: `Found ${models.length} model(s):\n\n${models.map(m => `- ${m.name} (${m.fields?.length || 0} fields)`).join('\n')}`,
+                },
+            ],
+        };
+    }
+
+    private async handleAddRelation(args: {
+        from_model: string;
+        to_model: string;
+        forward_connection_type: 'has_many' | 'has_one';
+        reverse_connection_type: 'has_many' | 'has_one';
+        known_as?: string;
+    }) {
+        const connections = await this.client!.upsertConnectionToModel(
+            args.from_model,
+            args.to_model,
+            args.forward_connection_type,
+            args.reverse_connection_type,
+            args.known_as
+        );
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Successfully created relation between "${args.from_model}" and "${args.to_model}".\n\nForward: ${args.from_model} ${args.forward_connection_type} ${args.to_model}\nReverse: ${args.to_model} ${args.reverse_connection_type} ${args.from_model}\n\nConnection details:\n${JSON.stringify(connections, null, 2)}`,
                 },
             ],
         };

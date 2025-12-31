@@ -1,5 +1,5 @@
 import { GraphQLClient } from 'graphql-request';
-import type { GraphQLResponse, ValidationInput, ApitoModel, ApitoField } from './types.js';
+import type { GraphQLResponse, ValidationInput, ApitoModel, ApitoField, ApitoConnection } from './types.js';
 
 export class ApitoGraphQLClient {
   private client: GraphQLClient;
@@ -282,6 +282,53 @@ export class ApitoGraphQLClient {
     );
 
     return result.modelFieldOperation;
+  }
+
+  async upsertConnectionToModel(
+    fromModel: string,
+    toModel: string,
+    forwardConnectionType: 'has_many' | 'has_one',
+    reverseConnectionType: 'has_many' | 'has_one',
+    knownAs?: string
+  ): Promise<ApitoConnection[]> {
+    const mutation = `
+      mutation UpsertConnectionToModel(
+        $forward_connection_type: RELATION_TYPE_ENUM!
+        $from: String!
+        $reverse_connection_type: RELATION_TYPE_ENUM!
+        $to: String!
+        $known_as: String
+      ) {
+        upsertConnectionToModel(
+          forward_connection_type: $forward_connection_type
+          from: $from
+          reverse_connection_type: $reverse_connection_type
+          to: $to
+          known_as: $known_as
+        ) {
+          type
+          relation
+          model
+          known_as
+        }
+      }
+    `;
+
+    const variables: Record<string, any> = {
+      forward_connection_type: forwardConnectionType.toUpperCase(),
+      from: fromModel,
+      reverse_connection_type: reverseConnectionType.toUpperCase(),
+      to: toModel,
+    };
+
+    if (knownAs) variables.known_as = knownAs;
+
+    const result = await this.execute<{ upsertConnectionToModel: ApitoConnection[] }>(
+      mutation,
+      variables
+    );
+
+    return result.upsertConnectionToModel;
   }
 
   async getProjectModelsInfo(modelName?: string): Promise<ApitoModel[]> {

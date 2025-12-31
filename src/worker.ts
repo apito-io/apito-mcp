@@ -8,15 +8,35 @@ import { ApitoMCPServer } from './index.js';
 
 export interface Env {
     APITO_GRAPHQL_ENDPOINT?: string;
-    APITO_AUTH_TOKEN?: string;
-    APITO_API_KEY?: string;
 }
 
-// Global server instance (reused across requests)
-let globalServer: ApitoMCPServer | null = null;
-let globalGraphqlEndpoint: string | null = null;
+// Cache server instances per API key (since API keys are project-dependent)
+const serverCache = new Map<string, ApitoMCPServer>();
 
-function getOrCreateServer(env: Env): ApitoMCPServer {
+function getOrCreateServer(request: Request, env: Env): ApitoMCPServer {
+    // Extract API key from multiple sources (in order of preference):
+    // 1. Authorization: Bearer <key> header
+    // 2. X-Apito-Key: <key> header
+    // 3. ?api_key=<key> query parameter (for mcp-remote compatibility)
+    const url = new URL(request.url);
+    const authHeader = request.headers.get('Authorization');
+    const apiKeyHeader = request.headers.get('X-Apito-Key');
+    const queryApiKey = url.searchParams.get('api_key');
+
+    let authToken: string | null = null;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        authToken = authHeader.substring(7);
+    } else if (apiKeyHeader) {
+        authToken = apiKeyHeader;
+    } else if (queryApiKey) {
+        authToken = queryApiKey;
+    }
+
+    if (!authToken) {
+        throw new Error('APITO_API_KEY must be provided via Authorization: Bearer <key> header, X-Apito-Key: <key> header, or ?api_key=<key> query parameter');
+    }
+
     // Default to system GraphQL endpoint for system queries
     let graphqlEndpoint = env.APITO_GRAPHQL_ENDPOINT || 'https://api.apito.io/system/graphql';
 
@@ -25,19 +45,15 @@ function getOrCreateServer(env: Env): ApitoMCPServer {
         graphqlEndpoint = graphqlEndpoint.replace('/secured/graphql', '/system/graphql');
     }
 
-    // Reuse server if endpoint hasn't changed
-    if (globalServer && globalGraphqlEndpoint === graphqlEndpoint) {
-        return globalServer;
+    // Cache server instances per API key
+    const cacheKey = `${authToken}:${graphqlEndpoint}`;
+    if (serverCache.has(cacheKey)) {
+        return serverCache.get(cacheKey)!;
     }
 
-    const authToken = env.APITO_AUTH_TOKEN || env.APITO_API_KEY;
-    if (!authToken) {
-        throw new Error('APITO_AUTH_TOKEN or APITO_API_KEY not configured');
-    }
-
-    globalGraphqlEndpoint = graphqlEndpoint;
-    globalServer = new ApitoMCPServer(graphqlEndpoint, authToken);
-    return globalServer;
+    const server = new ApitoMCPServer(graphqlEndpoint, authToken);
+    serverCache.set(cacheKey, server);
+    return server;
 }
 
 export default {
@@ -52,7 +68,7 @@ export default {
                 headers: {
                     'Access-Control-Allow-Origin': '*',
                     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Apito-Key',
                     'Access-Control-Max-Age': '86400',
                 },
             });
@@ -61,7 +77,7 @@ export default {
         // Handle SSE endpoint
         if (pathname === '/sse' || pathname.endsWith('/sse')) {
             try {
-                const server = getOrCreateServer(env);
+                const server = getOrCreateServer(request, env);
                 const mcpServer = server.getServer();
 
                 if (request.method === 'GET') {
@@ -129,7 +145,7 @@ export default {
                             params?: any;
                         };
 
-                        const server = getOrCreateServer(env);
+                        const server = getOrCreateServer(request, env);
 
                         // Handle MCP request through server
                         const response = await server.handleMCPRequest(body);

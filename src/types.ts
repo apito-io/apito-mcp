@@ -78,3 +78,10 @@ export interface ValidationInput {
     fixed_list_element_type?: string; // Typically "string" (REQUIRED for dropdown and multiSelect)
 }
 
+export interface ApitoConnection {
+    type?: string;
+    relation?: string;
+    model?: string;
+    known_as?: string;
+}
+

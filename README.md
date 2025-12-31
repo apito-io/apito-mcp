@@ -6,10 +6,12 @@ A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API bui
 
 - **Model Management**: Create, list, query, and delete models in your Apito project
 - **Field Management**: Add, update, rename, and delete fields with explicit type specification
+- **Relation Management**: Create relations between models (has_one, has_many)
 - **Full Field Type Support**: All Apito field types including text, multiline, number, date, boolean, media, object, repeated, list (with sub-types), and geo
 - **Resources**: Expose model schemas as MCP resources for easy access
 - **Error Handling**: Comprehensive error handling with detailed messages
 - **Cloudflare Workers**: Deploy as a remote MCP server for use with any MCP client
+- **Project-Dependent API Keys**: API keys are passed per-request, allowing different projects to use the same worker
 
 ## Installation
 
@@ -19,10 +21,21 @@ npm install
 
 ## Configuration
 
+### Local (STDIO) Mode
+
 Set the following environment variables:
 
 - `APITO_API_KEY` or `APITO_AUTH_TOKEN` (required): Your Apito API key (starts with `ak_`)
 - `APITO_GRAPHQL_ENDPOINT` (optional): GraphQL endpoint (defaults to `https://api.apito.io/system/graphql` for system queries)
+
+### Remote (Cloudflare Workers) Mode
+
+The API key is **not** stored as a Cloudflare Worker secret. Instead, it must be passed per-request via:
+- `Authorization: Bearer <key>` header
+- `X-Apito-Key: <key>` header  
+- `?api_key=<key>` query parameter
+
+The `APITO_GRAPHQL_ENDPOINT` is optional and defaults to `https://api.apito.io/system/graphql`. It can be set as a Cloudflare Worker secret if you need to override the default.
 
 ## Usage
 
@@ -50,14 +63,14 @@ npx tsx src/index.ts
 Deploy to Cloudflare Workers for remote access:
 
 ```bash
-# Set secrets
-wrangler secret put APITO_AUTH_TOKEN
-# Or use APITO_API_KEY
-wrangler secret put APITO_API_KEY
-
-# Deploy
+# Deploy (API key is passed per-request, not stored as secret)
 npm run deploy
+
+# Optional: Set GraphQL endpoint secret if you need to override the default
+npx wrangler secret put APITO_GRAPHQL_ENDPOINT --env production
 ```
+
+**Important**: The `APITO_API_KEY` is **not** stored as a Cloudflare Worker secret. It must be provided by the MCP client in each request via headers or query parameters. This allows the same worker to serve multiple projects with different API keys.
 
 ## MCP Tools
 
@@ -213,6 +226,37 @@ Get the complete schema for a model including all fields and their types.
 
 - `model_name` (required): Name of the model to get schema for
 
+### `add_relation`
+
+Create a relation between two models. Relations define how models are connected (e.g., a Patient has many DentalAssessments, or a DentalAssessment belongs to one Patient).
+
+**Arguments:**
+
+- `from_model` (required): Source model name (the model that will have the relation field)
+- `to_model` (required): Target model name (the model being related to)
+- `forward_connection_type` (required): Forward relation type from source to target. Valid values: `"has_many"` (one-to-many) or `"has_one"` (one-to-one)
+- `reverse_connection_type` (required): Reverse relation type from target back to source. Valid values: `"has_many"` (one-to-many) or `"has_one"` (one-to-one)
+- `known_as` (optional): Optional alternate identifier for this relation (custom name for the relation field)
+
+**Example:**
+
+```json
+{
+  "tool": "add_relation",
+  "arguments": {
+    "from_model": "dentalAssessment",
+    "to_model": "patient",
+    "forward_connection_type": "has_many",
+    "reverse_connection_type": "has_one",
+    "known_as": "assessments"
+  }
+}
+```
+
+This creates:
+- Forward: `dentalAssessment` has many `patient`
+- Reverse: `patient` has one `dentalAssessment`
+
 ## MCP Resources
 
 Model schemas are exposed as resources with URIs:
@@ -344,6 +388,8 @@ All errors are logged to stderr (important for STDIO servers).
 3. **List Fields**: For dropdown and multiSelect, always provide `validation.fixed_list_elements` and `validation.fixed_list_element_type`
 4. **Nested Fields**: Set `is_object_field=true` for `object` and `repeated` field types
 5. **Parent Fields**: Use `parent_field` parameter when adding nested fields to object or repeated fields
+6. **API Keys**: For remote deployments, API keys are project-dependent and must be provided per-request, not stored as Cloudflare secrets
+7. **Relations**: Use `add_relation` to create bidirectional relationships between models
 
 ## Using with MCP Clients
 
@@ -373,12 +419,20 @@ Add to `~/.cursor/mcp.json`:
 
 **Remote (Cloudflare Workers):**
 
+**Option 1: Using Header (Recommended if mcp-remote supports env var substitution):**
+
 ```json
 {
   "mcpServers": {
     "apito-production": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://apito-mcp.apito.workers.dev/sse"],
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://apito-mcp.apito.workers.dev/sse",
+        "--header",
+        "X-Apito-Key:${APITO_API_KEY}"
+      ],
       "env": {
         "APITO_API_KEY": "your-api-key-here"
       }
@@ -386,6 +440,44 @@ Add to `~/.cursor/mcp.json`:
   }
 }
 ```
+
+**Option 2: Using Query Parameter (More reliable):**
+
+```json
+{
+  "mcpServers": {
+    "apito-production": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://apito-mcp.apito.workers.dev/sse?api_key=your-api-key-here"
+      ]
+    }
+  }
+}
+```
+
+**Option 3: Hardcode in Header (If env var substitution doesn't work):**
+
+```json
+{
+  "mcpServers": {
+    "apito-production": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://apito-mcp.apito.workers.dev/sse",
+        "--header",
+        "X-Apito-Key:your-api-key-here"
+      ]
+    }
+  }
+}
+```
+
+**Note**: If `mcp-remote` doesn't support environment variable substitution in the `--header` flag, use Option 2 (query parameter) or Option 3 (hardcoded header). The `env` section in Option 1 may not be used if substitution isn't supported.
 
 Restart Cursor after configuration.
 
@@ -439,15 +531,20 @@ Any MCP-compatible client can connect to:
 
 ### Environment Variables
 
-For remote deployments, set secrets in Cloudflare Workers:
+**For Remote Deployments (Cloudflare Workers):**
+
+The API key is **not** stored as a Cloudflare Worker secret. It must be provided by the MCP client in each request. This allows the same worker to serve multiple projects.
+
+Optional: Set GraphQL endpoint secret if you need to override the default:
 
 ```bash
-# Set API key
-npx wrangler secret put APITO_API_KEY --env production
-
-# Set GraphQL endpoint (optional, defaults to system endpoint)
+# Set GraphQL endpoint (optional, defaults to https://api.apito.io/system/graphql)
 npx wrangler secret put APITO_GRAPHQL_ENDPOINT --env production
 ```
+
+**For Local Deployments (STDIO):**
+
+Set environment variables in your MCP client configuration (see examples above).
 
 ### Testing the Connection
 
@@ -461,6 +558,7 @@ You can test the MCP server connection using the MCP Inspector or by checking if
 - `delete_model`
 - `list_models`
 - `get_model_schema`
+- `add_relation`
 
 ## License
 
