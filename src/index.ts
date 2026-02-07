@@ -381,6 +381,14 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                     },
                 },
                 {
+                    name: 'get_project_query_structure',
+                    description: "Get the Apito project GraphQL query structure: which operations exist for each model. For model 'Task' you get task(_id), taskList, taskListCount, createTask, updateTask, deleteTask, upsertTaskList. CamelCase matters. Use this to know what to call when querying or mutating project data.",
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
                     name: 'add_relation',
                     description: 'Create a relation between two models. Relations define how models are connected (e.g., a Patient has many DentalAssessments, or a DentalAssessment belongs to one Patient).',
                     inputSchema: {
@@ -442,6 +450,10 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                         return await this.handleListModels();
                     case 'get_model_schema':
                         return await this.handleGetModelSchema(args as any);
+                    case 'get_project_query_structure':
+                        return await this.handleGetProjectQueryStructure();
+                    case 'add_relation':
+                        return await this.handleAddRelation(args as any);
                     default:
                         throw new Error(`Unknown tool: ${name}`);
                 }
@@ -510,7 +522,7 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
         };
         this.server.setRequestHandler(GetPromptRequestSchema, this.getPromptHandler);
 
-        // List available resources (model schemas)
+        // List available resources (model schemas + query guide)
         this.listResourcesHandler = async (_request: any) => {
             if (!this.client) {
                 this.client = new ApitoGraphQLClient(this.graphqlEndpoint, this.authToken);
@@ -519,14 +531,21 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
             try {
                 const models = await this.client.getProjectModelsInfo();
 
-                return {
-                    resources: models.map(model => ({
+                const resources: { uri: string; name: string; description: string; mimeType: string }[] = [
+                    {
+                        uri: 'apito://project-query-guide',
+                        name: 'Apito Project Query Structure Guide',
+                        description: 'where filters, connections (relations), pagination, mutations, and what is possible vs not',
+                        mimeType: 'text/markdown',
+                    },
+                    ...models.map(model => ({
                         uri: `apito://model/${model.name}`,
                         name: `Model: ${model.name}`,
                         description: `Schema for ${model.name} model with ${model.fields?.length || 0} fields`,
                         mimeType: 'application/json',
                     })),
-                };
+                ];
+                return { resources };
             } catch (error: any) {
                 console.error('Error listing resources:', error);
                 return {
@@ -544,10 +563,24 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
 
             const { uri } = request.params;
 
+            // Static resource: apito://project-query-guide
+            if (uri === 'apito://project-query-guide') {
+                const guide = this.getProjectQueryGuideContent();
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: guide,
+                        },
+                    ],
+                };
+            }
+
             // Parse URI: apito://model/{modelName}
             const match = uri.match(/^apito:\/\/model\/(.+)$/);
             if (!match) {
-                throw new Error(`Invalid resource URI: ${uri}. Expected format: apito://model/{modelName}`);
+                throw new Error(`Invalid resource URI: ${uri}. Expected format: apito://model/{modelName} or apito://project-query-guide`);
             }
 
             const modelName = match[1];
@@ -784,6 +817,107 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                 },
             ],
         };
+    }
+
+    private async handleGetProjectQueryStructure() {
+        const models = await this.client!.getProjectModelsInfo();
+        const mapping = models.map((m) => {
+            const singular = this.modelNameToCamelCase(m.name);
+            return {
+                model: m.name,
+                singular: `${singular}(_id)`,
+                list: `${singular}List`,
+                count: `${singular}ListCount`,
+                create: `create${m.name}`,
+                update: `update${m.name}`,
+                delete: `delete${m.name}`,
+                upsert: `upsert${m.name}List`,
+            };
+        });
+
+        const text = `# Apito Project Query Structure\n\n` +
+            `For each model, these GraphQL operations exist. **CamelCase matters.**\n\n` +
+            `| Model | Get by ID | List | Count | Create | Update | Delete | Upsert |\n` +
+            `|-------|-----------|------|-------|--------|--------|--------|--------|\n` +
+            mapping.map((r) => `| ${r.model} | ${r.singular} | ${r.list} | ${r.count} | ${r.create} | ${r.update} | ${r.delete} | ${r.upsert} |`).join('\n') +
+            `\n\nExample for Task: \`task(_id: "…")\`, \`taskList\`, \`createTask\`, \`updateTask\`, \`deleteTask\`, \`upsertTaskList\`\n\n` +
+            `Use resource \`apito://project-query-guide\` for full guide.`;
+
+        return {
+            content: [{ type: 'text' as const, text }],
+        };
+    }
+
+    private modelNameToCamelCase(name: string): string {
+        return name.charAt(0).toLowerCase() + name.slice(1);
+    }
+
+    private getProjectQueryGuideContent(): string {
+        return `# Apito Project GraphQL Query Structure
+
+For each model (e.g. \`Task\`, \`DentalAssessment\`), Apito generates a fixed set of operations. **CamelCase matters.**
+
+## CRITICAL: Response Structure
+
+**User-defined fields are NEVER at the root.** They live under \`data\`.
+
+Every document has: \`id\`, \`data { ... }\`, \`meta { ... }\`. Relations (has_one / has_many) return objects with the same shape.
+
+**WRONG**: \`articleList { id title slug category { id name } }\` — user fields at root
+**RIGHT**: \`articleList { id data { title slug } meta { created_at } category { id data { name } } }\`
+
+Always wrap user fields in \`data { }\`. Relations: \`has_one\` = single object, \`has_many\` = list (e.g. \`taskList\`).
+
+## Naming Convention
+
+| Model (PascalCase) | Singular | List | Count | Create | Update | Delete | Upsert |
+|--------------------|---------|------|-------|--------|--------|--------|--------|
+| Task | task(_id) | taskList | taskListCount | createTask | updateTask | deleteTask | upsertTaskList |
+| DentalAssessment | dentalAssessment(_id) | dentalAssessmentList | dentalAssessmentListCount | createDentalAssessment | updateDentalAssessment | deleteDentalAssessment | upsertDentalAssessmentList |
+| Category | category(_id) | categoryList | categoryListCount | createCategory | updateCategory | deleteCategory | upsertCategoryList |
+
+## The \`where\` Parameter (Filtering)
+
+\`where\` is an object keyed by field names. Each field uses operators by type:
+
+- **string** (text, multiline): \`eq\`, \`ne\`, \`in\`, \`not_in\`, \`contains\`
+- **string** (date): \`eq\`, \`ne\`, \`before\`, \`after\`, \`between\`
+- **int/double**: \`eq\`, \`ne\`, \`lt\`, \`lte\`, \`gt\`, \`gte\`, \`between\`, \`in\`, \`not_in\`
+- **bool**: \`eq\`, \`ne\`
+- **geo**: \`geo_within\` (lat, lon, km_radius)
+
+Use \`OR: [{ field: { eq: "x" } }, { field: { eq: "y" } }]\` for OR logic. Use \`_key: { in: ["id1","id2"] }\` to filter by IDs (ignores rest of where).
+
+## Connection Queries (Relations)
+
+Relations are **bidirectional** (has_one, has_many). Query related data by selecting connection fields:
+
+- **has_one**: Returns single object (e.g. \`author { ... }\`)
+- **has_many**: Returns list with \`where\`, \`page\`, \`limit\`, \`sort\` (e.g. \`bookList(where: {...}, page: 1, limit: 10)\`)
+
+Use \`relation\` to filter by related model: \`taskList(relation: { category: { name: { eq: "urgent" } } })\`
+Use \`connection\` for connection metadata: \`connection_type\` (forward/backward), \`_id\`, \`to_model\`, \`relation_type\`
+
+## Pagination
+
+- \`page\`: 1-based page number
+- \`limit\`: Items per page (default 10). Use \`-1\` for no limit
+- \`sort\`: \`{ fieldName: ASC, anotherField: DESC }\`
+
+## Full Query/Mutation Args
+
+**List**: \`where\`, \`page\`, \`limit\`, \`local\`, \`status\` (all/draft/published), \`_key\`, \`connection\`, \`relation\`, \`sort\`, \`groupBy\`
+**Create**: \`payload\`, \`local\`, \`status\`, \`connect\` (relation IDs)
+**Update**: \`_id\`, \`payload\`, \`connect\`, \`disconnect\`, \`keepRevision\`, \`deltaUpdate\`
+**Delete**: \`_ids\`
+**Upsert**: \`payloads\`, \`local\`, \`status\`
+
+## What Is Possible vs Not
+
+**Possible**: CRUD, filters by field type, OR/AND, pagination, sort, groupBy, relations (has_one, has_many), relation/connection filters, locale, draft/published.
+**Not**: Raw SQL, cross-model filters without relation, recursive graph traversal, full-text across all fields, schema changes via project API.
+
+Use the \`get_project_query_structure\` tool to get the mapping for your project models.`;
     }
 
     private async handleAddRelation(args: {

@@ -315,9 +315,9 @@ export class ApitoGraphQLClient {
     `;
 
     const variables: Record<string, any> = {
-      forward_connection_type: forwardConnectionType.toUpperCase(),
+      forward_connection_type: forwardConnectionType, // Keep lowercase: has_many or has_one
       from: fromModel,
-      reverse_connection_type: reverseConnectionType.toUpperCase(),
+      reverse_connection_type: reverseConnectionType, // Keep lowercase: has_many or has_one
       to: toModel,
     };
 

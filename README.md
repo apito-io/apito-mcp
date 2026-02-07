@@ -13,65 +13,6 @@ A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API bui
 - **Cloudflare Workers**: Deploy as a remote MCP server for use with any MCP client
 - **Project-Dependent API Keys**: API keys are passed per-request, allowing different projects to use the same worker
 
-## Installation
-
-```bash
-npm install
-```
-
-## Configuration
-
-### Local (STDIO) Mode
-
-Set the following environment variables:
-
-- `APITO_API_KEY` or `APITO_AUTH_TOKEN` (required): Your Apito API key (starts with `ak_`)
-- `APITO_GRAPHQL_ENDPOINT` (optional): GraphQL endpoint (defaults to `https://api.apito.io/system/graphql` for system queries)
-
-### Remote (Cloudflare Workers) Mode
-
-The API key is **not** stored as a Cloudflare Worker secret. Instead, it must be passed per-request via:
-- `Authorization: Bearer <key>` header
-- `X-Apito-Key: <key>` header  
-- `?api_key=<key>` query parameter
-
-The `APITO_GRAPHQL_ENDPOINT` is optional and defaults to `https://api.apito.io/system/graphql`. It can be set as a Cloudflare Worker secret if you need to override the default.
-
-## Usage
-
-### STDIO Mode (Local)
-
-Run the server locally using stdio transport:
-
-```bash
-APITO_API_KEY=your-api-key-here npx tsx src/index.ts
-```
-
-Or with environment file:
-
-```bash
-# Create .env file
-echo "APITO_API_KEY=your-api-key-here" > .env
-echo "APITO_GRAPHQL_ENDPOINT=https://api.apito.io/secured/graphql" >> .env
-
-# Run
-npx tsx src/index.ts
-```
-
-### Cloudflare Workers (Remote)
-
-Deploy to Cloudflare Workers for remote access:
-
-```bash
-# Deploy (API key is passed per-request, not stored as secret)
-npm run deploy
-
-# Optional: Set GraphQL endpoint secret if you need to override the default
-npx wrangler secret put APITO_GRAPHQL_ENDPOINT --env production
-```
-
-**Important**: The `APITO_API_KEY` is **not** stored as a Cloudflare Worker secret. It must be provided by the MCP client in each request via headers or query parameters. This allows the same worker to serve multiple projects with different API keys.
-
 ### MCP Client Configuration (Cursor / mcp-remote)
 
 Add the apito-mcp server to your MCP client config (e.g. Cursor `~/.cursor/mcp.json` or project `.cursor/mcp.json`):
@@ -299,7 +240,7 @@ This creates:
 
 Model schemas and the query structure guide are exposed as resources with URIs:
 
-- `apito://project-query-guide` - Apito query structure: naming, `where` filters, connections (relations), pagination, mutations, and what is possible vs not
+- `apito://project-query-guide` - Apito query structure: **response shape** (id, data, meta), naming, `where` filters, connections (relations), pagination, mutations
 - `apito://model/{modelName}` - Access model schema as JSON
 
 ## Field Type Reference
