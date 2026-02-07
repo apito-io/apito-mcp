@@ -72,6 +72,32 @@ npx wrangler secret put APITO_GRAPHQL_ENDPOINT --env production
 
 **Important**: The `APITO_API_KEY` is **not** stored as a Cloudflare Worker secret. It must be provided by the MCP client in each request via headers or query parameters. This allows the same worker to serve multiple projects with different API keys.
 
+### MCP Client Configuration (Cursor / mcp-remote)
+
+Add the apito-mcp server to your MCP client config (e.g. Cursor `~/.cursor/mcp.json` or project `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "apito-mcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://apito-mcp.apito.workers.dev/sse",
+        "--header",
+        "X-Apito-Key:${APITO_API_KEY}"
+      ],
+      "env": {
+        "APITO_API_KEY": "ak_your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+Replace `ak_your-api-key-here` with your Apito API key. The `X-Apito-Key` header is sent with each request to the remote worker.
+
 ## MCP Tools
 
 ### `create_model`
@@ -226,6 +252,18 @@ Get the complete schema for a model including all fields and their types.
 
 - `model_name` (required): Name of the model to get schema for
 
+### `get_project_query_structure`
+
+Get the Apito project GraphQL query structure: which operations exist for each model. Apito uses a consistent naming convention: for model `Task` you get `task(_id)`, `taskList`, `taskListCount`, `createTask`, `updateTask`, `deleteTask`, `upsertTaskList`. **CamelCase matters** — model names are converted to camelCase for operation names.
+
+Use this tool when you need to know what GraphQL operations to call for querying or mutating project data. The schema is dynamic per project, so call this early to discover available operations.
+
+**Arguments:** None
+
+**Returns:** A mapping of each model to its operations:
+- **Queries:** `{singular}(_id)` (single by ID), `{singular}List` (paginated list), `{singular}ListCount` (count)
+- **Mutations:** `create{Model}`, `update{Model}`, `delete{Model}`, `upsert{Model}List`
+
 ### `add_relation`
 
 Create a relation between two models. Relations define how models are connected (e.g., a Patient has many DentalAssessments, or a DentalAssessment belongs to one Patient).
@@ -259,8 +297,9 @@ This creates:
 
 ## MCP Resources
 
-Model schemas are exposed as resources with URIs:
+Model schemas and the query structure guide are exposed as resources with URIs:
 
+- `apito://project-query-guide` - Apito query structure: naming, `where` filters, connections (relations), pagination, mutations, and what is possible vs not
 - `apito://model/{modelName}` - Access model schema as JSON
 
 ## Field Type Reference
@@ -419,8 +458,6 @@ Add to `~/.cursor/mcp.json`:
 
 **Remote (Cloudflare Workers):**
 
-**Option 1: Using Header (Recommended if mcp-remote supports env var substitution):**
-
 ```json
 {
   "mcpServers": {
@@ -441,43 +478,7 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
-**Option 2: Using Query Parameter (More reliable):**
-
-```json
-{
-  "mcpServers": {
-    "apito-production": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://apito-mcp.apito.workers.dev/sse?api_key=your-api-key-here"
-      ]
-    }
-  }
-}
-```
-
-**Option 3: Hardcode in Header (If env var substitution doesn't work):**
-
-```json
-{
-  "mcpServers": {
-    "apito-production": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "https://apito-mcp.apito.workers.dev/sse",
-        "--header",
-        "X-Apito-Key:your-api-key-here"
-      ]
-    }
-  }
-}
-```
-
-**Note**: If `mcp-remote` doesn't support environment variable substitution in the `--header` flag, use Option 2 (query parameter) or Option 3 (hardcoded header). The `env` section in Option 1 may not be used if substitution isn't supported.
+**Note**: The API key is passed via the `X-Apito-Key` header using the `--header` flag. The `env.APITO_API_KEY` environment variable is automatically substituted by `mcp-remote`.
 
 Restart Cursor after configuration.
 
@@ -558,6 +559,7 @@ You can test the MCP server connection using the MCP Inspector or by checking if
 - `delete_model`
 - `list_models`
 - `get_model_schema`
+- `get_project_query_structure`
 - `add_relation`
 
 ## License
