@@ -420,6 +420,116 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                         required: ['from_model', 'to_model', 'forward_connection_type', 'reverse_connection_type'],
                     },
                 },
+                {
+                    name: 'upsert_data',
+                    description: 'Create or update a record in a model. Use payload for field values. For updates, pass _id. Use connect to link relations (e.g. {"author_id": "uuid"} for has_one, {"tag_ids": ["uuid1","uuid2"]} for has_many).',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Name of the model',
+                            },
+                            payload: {
+                                type: 'object',
+                                description: 'JSON object of field values to create/update',
+                            },
+                            _id: {
+                                type: 'string',
+                                description: 'Document ID for updates (omit for create)',
+                            },
+                            status: {
+                                type: 'string',
+                                description: 'Document status: "draft" or "published" (default: "published")',
+                                enum: ['draft', 'published'],
+                            },
+                            local: {
+                                type: 'string',
+                                description: 'Locale for localized content (default: "en")',
+                            },
+                            connect: {
+                                type: 'object',
+                                description: 'JSON for connecting relations: {"author_id": "uuid"} for has_one, {"tag_ids": ["uuid1","uuid2"]} for has_many',
+                            },
+                            disconnect: {
+                                type: 'object',
+                                description: 'JSON for disconnecting relations',
+                            },
+                        },
+                        required: ['model_name', 'payload'],
+                    },
+                },
+                {
+                    name: 'get_data',
+                    description: 'Query or list records from a model with optional filters, pagination, and search.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Name of the model',
+                            },
+                            page: {
+                                type: 'number',
+                                description: 'Page number (default: 1)',
+                            },
+                            limit: {
+                                type: 'number',
+                                description: 'Records per page (default: 10)',
+                            },
+                            where: {
+                                type: 'object',
+                                description: 'JSON filter object',
+                            },
+                            status: {
+                                type: 'string',
+                                description: 'Filter by status: "all", "draft", or "published"',
+                                enum: ['all', 'draft', 'published'],
+                            },
+                            search: {
+                                type: 'string',
+                                description: 'Text search query',
+                            },
+                        },
+                        required: ['model_name'],
+                    },
+                },
+                {
+                    name: 'delete_data',
+                    description: 'Delete a record by ID.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Name of the model',
+                            },
+                            _id: {
+                                type: 'string',
+                                description: 'Document ID to delete',
+                            },
+                        },
+                        required: ['model_name', '_id'],
+                    },
+                },
+                {
+                    name: 'duplicate_data',
+                    description: 'Duplicate a record by ID. Returns the new record ID.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Name of the model',
+                            },
+                            _id: {
+                                type: 'string',
+                                description: 'Document ID to duplicate',
+                            },
+                        },
+                        required: ['model_name', '_id'],
+                    },
+                },
             ],
         });
         this.server.setRequestHandler(ListToolsRequestSchema, this.listToolsHandler);
@@ -454,6 +564,14 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                         return await this.handleGetProjectQueryStructure();
                     case 'add_relation':
                         return await this.handleAddRelation(args as any);
+                    case 'upsert_data':
+                        return await this.handleUpsertData(args as any);
+                    case 'get_data':
+                        return await this.handleGetData(args as any);
+                    case 'delete_data':
+                        return await this.handleDeleteData(args as any);
+                    case 'duplicate_data':
+                        return await this.handleDuplicateData(args as any);
                     default:
                         throw new Error(`Unknown tool: ${name}`);
                 }
@@ -868,6 +986,8 @@ Every document has: \`id\`, \`data { ... }\`, \`meta { ... }\`. Relations (has_o
 
 Always wrap user fields in \`data { }\`. Relations: \`has_one\` = single object, \`has_many\` = list (e.g. \`taskList\`).
 
+**multiline fields** (content, bio, description, etc.) MUST have sub-selection: \`content { html }\` or \`bio { text }\` — pick \`html\`, \`text\`, or \`markdown\`. **geo fields** MUST have sub-selection: \`location { lat lon }\`. Selecting them bare causes "must have a sub selection" error.
+
 ## Naming Convention
 
 | Model (PascalCase) | Singular | List | Count | Create | Update | Delete | Upsert |
@@ -940,6 +1060,85 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
                 {
                     type: 'text',
                     text: `Successfully created relation between "${args.from_model}" and "${args.to_model}".\n\nForward: ${args.from_model} ${args.forward_connection_type} ${args.to_model}\nReverse: ${args.to_model} ${args.reverse_connection_type} ${args.from_model}\n\nConnection details:\n${JSON.stringify(connections, null, 2)}`,
+                },
+            ],
+        };
+    }
+
+    private async handleUpsertData(args: {
+        model_name: string;
+        payload: Record<string, any>;
+        _id?: string;
+        status?: string;
+        local?: string;
+        connect?: Record<string, any>;
+        disconnect?: Record<string, any>;
+    }) {
+        const doc = await this.client!.upsertModelData(args.model_name, args.payload, {
+            _id: args._id,
+            status: args.status,
+            local: args.local,
+            connect: args.connect,
+            disconnect: args.disconnect,
+        });
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Successfully upserted record in "${args.model_name}".\n\n${JSON.stringify(doc, null, 2)}`,
+                },
+            ],
+        };
+    }
+
+    private async handleGetData(args: {
+        model_name: string;
+        page?: number;
+        limit?: number;
+        where?: Record<string, any>;
+        status?: string;
+        search?: string;
+    }) {
+        const result = await this.client!.getModelData(args.model_name, {
+            page: args.page,
+            limit: args.limit,
+            where: args.where,
+            status: args.status,
+            search: args.search,
+        });
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Found ${result.count} record(s) in "${args.model_name}".\n\n${JSON.stringify(result, null, 2)}`,
+                },
+            ],
+        };
+    }
+
+    private async handleDeleteData(args: { model_name: string; _id: string }) {
+        const deleted = await this.client!.deleteModelData(args.model_name, args._id);
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Successfully deleted record ${deleted.id} from "${args.model_name}".`,
+                },
+            ],
+        };
+    }
+
+    private async handleDuplicateData(args: { model_name: string; _id: string }) {
+        const duplicated = await this.client!.duplicateModelData(args.model_name, args._id);
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Successfully duplicated record. New record ID: ${duplicated.id}`,
                 },
             ],
         };

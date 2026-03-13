@@ -35,6 +35,38 @@ For a model named `ModelName` (PascalCase):
 | `meta` | Object | System metadata (created_at, updated_at, created_by, etc.) |
 | `relation_doc_id` | String | (optional) Related document ID |
 
+### Fields Requiring Sub-Selection
+
+Some field types are **object types** in GraphQL and **must** have a sub-selection. Never select them as bare fields.
+
+| Field Type | Sub-Selection Required | Example |
+|------------|------------------------|---------|
+| **multiline** | Yes—pick one or more of `text`, `html`, `markdown` | `content { html }` or `bio { text }` |
+| **geo** | Yes—pick `lat`, `lon` (or both) | `location { lat lon }` |
+| **media** | Yes—typically `url` or other subfields | `image { url }` |
+| **object** | Yes—select nested fields | `address { city country }` |
+| **repeated** | Yes—select nested fields | `items { name price }` |
+
+**WRONG** (causes "must have a sub selection" error):
+```graphql
+data {
+  content      # multiline - ERROR
+  bio          # multiline - ERROR
+  location     # geo - ERROR
+  thumbnail    # media - ERROR
+}
+```
+
+**RIGHT**:
+```graphql
+data {
+  content { html }       # multiline: pick html, text, or markdown
+  bio { text }          # multiline
+  location { lat lon }  # geo
+  thumbnail { url }     # media: must use { url } or other subfields
+}
+```
+
 ### Correct Query Shape
 
 ```graphql
@@ -80,14 +112,15 @@ articleList {
 ### RIGHT (always use)
 
 ```graphql
-# ✅ User fields under data, relations have id + data
+# ✅ User fields under data, multiline/geo/media need sub-selection, relations have id + data
 articleList(limit: 20) {
   id
   data {
     title
     slug
     excerpt
-    content
+    thumbnail { url }         # media: must use { url } or other subfields
+    content { html }          # multiline: must use { html } or { text } or { markdown }
     publishedat
     seotitle
     seodescription
@@ -102,7 +135,10 @@ articleList(limit: 20) {
   }
   author {
     id
-    data { name bio }
+    data {
+      name
+      bio { text }             # multiline: must use sub-selection
+    }
   }
   commentList(limit: 20) {
     id
@@ -403,10 +439,29 @@ Count with same filters as list (no `page`/`limit`).
 
 3. **Tool `get_project_query_structure`** – Uses `list_models` / `getProjectModelsInfo` to derive operations per model and return a mapping.
 
+### Phase 2b: Data CRUD Tools (Done)
+
+4. **Tool `upsert_data`** – Create or update a record via `upsertModelData` system mutation. Payload, connect, disconnect use JSON.
+5. **Tool `get_data`** – Query/list records via `getModelData` system query. Supports page, limit, where, status, search.
+6. **Tool `delete_data`** – Delete a record via `deleteModelData` system mutation.
+7. **Tool `duplicate_data`** – Duplicate a record via `duplicateModelData` system mutation.
+
+**Relation Connect/Disconnect Pattern** (for `upsert_data`):
+
+- **has_one**: `connect: { "author_id": "uuid" }`
+- **has_many**: `connect: { "tag_ids": ["uuid1", "uuid2"] }`
+
+Keys use `{modelName}_id` for has_one and `{modelName}_ids` for has_many (where `modelName` is the related model name or `known_as`).
+
+**Example: Create category and connect article to it**
+
+1. Create category: `upsert_data` with `model_name: "Category"`, `payload: { name: "Technology", slug: "technology" }` → returns `id`
+2. Create article: `upsert_data` with `model_name: "Article"`, `payload: { title: "My Post", slug: "my-post" }`, `connect: { category_id: "<id-from-step-1>" }`
+
 ### Phase 3: Optional Enhancements (Future)
 
-4. **Project GraphQL introspection** – If the project endpoint is available, introspect `__schema` and return actual operations (validates convention).
-5. **`query_project` / `mutate_project` tools** – Execute project queries/mutations (requires project endpoint and auth).
+8. **Project GraphQL introspection** – If the project endpoint is available, introspect `__schema` and return actual operations (validates convention).
+9. **`query_project` / `mutate_project` tools** – Execute project queries/mutations (requires project endpoint and auth).
 
 ---
 

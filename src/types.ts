@@ -85,3 +85,20 @@ export interface ApitoConnection {
     known_as?: string;
 }
 
+export interface ApitoDocument {
+    id: string;
+    _key?: string;
+    type?: string;
+    data: Record<string, any>;
+    meta?: {
+        created_at?: string;
+        updated_at?: string;
+        status?: string;
+    };
+}
+
+export interface GetModelDataResponse {
+    count: number;
+    results: ApitoDocument[];
+}
+

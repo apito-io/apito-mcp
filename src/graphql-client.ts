@@ -1,5 +1,5 @@
 import { GraphQLClient } from 'graphql-request';
-import type { GraphQLResponse, ValidationInput, ApitoModel, ApitoField, ApitoConnection } from './types.js';
+import type { GraphQLResponse, ValidationInput, ApitoModel, ApitoField, ApitoConnection, ApitoDocument, GetModelDataResponse } from './types.js';
 
 export class ApitoGraphQLClient {
   private client: GraphQLClient;
@@ -392,6 +392,169 @@ export class ApitoGraphQLClient {
 
     const result = await this.execute<{ currentProject: any }>(query);
     return result.currentProject;
+  }
+
+  async upsertModelData(
+    modelName: string,
+    payload: Record<string, any>,
+    options: {
+      _id?: string;
+      status?: string;
+      local?: string;
+      connect?: Record<string, any>;
+      disconnect?: Record<string, any>;
+    } = {}
+  ): Promise<ApitoDocument> {
+    const status = options.status || 'published';
+    const hasId = !!options._id;
+    const hasLocal = !!options.local;
+    const hasConnect = !!options.connect && Object.keys(options.connect).length > 0;
+    const hasDisconnect = !!options.disconnect && Object.keys(options.disconnect).length > 0;
+
+    const varDecls: string[] = ['$model_name: String!', '$payload: JSON', '$status: String!'];
+    const argList: string[] = ['model_name: $model_name', 'payload: $payload', 'status: $status'];
+    const variables: Record<string, any> = {
+      model_name: modelName,
+      payload,
+      status,
+    };
+
+    if (hasId) {
+      varDecls.push('$_id: String!');
+      argList.push('_id: $_id');
+      variables._id = options._id;
+    }
+    if (hasLocal) {
+      varDecls.push('$local: String!');
+      argList.push('local: $local');
+      variables.local = options.local;
+    }
+    if (hasConnect) {
+      varDecls.push('$connect: JSON!');
+      argList.push('connect: $connect');
+      variables.connect = options.connect;
+    }
+    if (hasDisconnect) {
+      varDecls.push('$disconnect: JSON!');
+      argList.push('disconnect: $disconnect');
+      variables.disconnect = options.disconnect;
+    }
+
+    const mutation = `
+      mutation UpsertModelData(${varDecls.join(', ')}) {
+        upsertModelData(${argList.join(', ')}) {
+          id
+          _key
+          type
+          data
+          meta {
+            created_at
+            updated_at
+            status
+          }
+        }
+      }
+    `;
+
+    const result = await this.execute<{ upsertModelData: ApitoDocument }>(
+      mutation,
+      variables
+    );
+    return result.upsertModelData;
+  }
+
+  async getModelData(
+    modelName: string,
+    options: {
+      page?: number;
+      limit?: number;
+      where?: Record<string, any>;
+      status?: string;
+      search?: string;
+    } = {}
+  ): Promise<GetModelDataResponse> {
+    const query = `
+      query GetModelData(
+        $model: String!
+        $page: Int
+        $limit: Int
+        $where: JSON
+        $status: FILTER_STATUS_TYPE_ENUM
+        $search: String
+      ) {
+        getModelData(
+          model: $model
+          page: $page
+          limit: $limit
+          where: $where
+          status: $status
+          search: $search
+        ) {
+          count
+          results {
+            id
+            _key
+            type
+            data
+            meta {
+              created_at
+              updated_at
+              status
+            }
+          }
+        }
+      }
+    `;
+
+    const variables: Record<string, any> = {
+      model: modelName,
+    };
+    if (options.page !== undefined) variables.page = options.page;
+    if (options.limit !== undefined) variables.limit = options.limit;
+    if (options.where) variables.where = options.where;
+    const validStatus = ['all', 'draft', 'published'];
+    if (options.status && validStatus.includes(options.status)) {
+      variables.status = options.status;
+    }
+    if (options.search) variables.search = options.search;
+
+    const result = await this.execute<{ getModelData: GetModelDataResponse }>(
+      query,
+      variables
+    );
+    return result.getModelData;
+  }
+
+  async deleteModelData(modelName: string, id: string): Promise<{ id: string }> {
+    const mutation = `
+      mutation DeleteModelData($_id: String, $model_name: String!) {
+        deleteModelData(_id: $_id, model_name: $model_name) {
+          id
+        }
+      }
+    `;
+
+    const result = await this.execute<{ deleteModelData: { id: string } }>(
+      mutation,
+      { _id: id, model_name: modelName }
+    );
+    return result.deleteModelData;
+  }
+
+  async duplicateModelData(modelName: string, id: string): Promise<{ id: string }> {
+    const mutation = `
+      mutation DuplicateModelData($_id: String, $model_name: String!) {
+        duplicateModelData(_id: $_id, model_name: $model_name) {
+          id
+        }
+      }
+    `;
+
+    const result = await this.execute<{ duplicateModelData: { id: string } }>(
+      mutation,
+      { _id: id, model_name: modelName }
+    );
+    return result.duplicateModelData;
   }
 }
 

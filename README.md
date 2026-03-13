@@ -236,11 +236,91 @@ This creates:
 - Forward: `dentalAssessment` has many `patient`
 - Reverse: `patient` has one `dentalAssessment`
 
+### `upsert_data`
+
+Create or update a record in a model. Maps to Apito's `upsertModelData` system mutation.
+
+**Arguments:**
+
+- `model_name` (required): Name of the model
+- `payload` (required): JSON object of field values to create/update
+- `_id` (optional): Document ID for updates (omit for create)
+- `status` (optional): Document status: `"draft"` or `"published"` (default: `"published"`)
+- `local` (optional): Locale for localized content (default: `"en"`)
+- `connect` (optional): JSON for connecting relations — `{"author_id": "uuid"}` for has_one, `{"tag_ids": ["uuid1","uuid2"]}` for has_many
+- `disconnect` (optional): JSON for disconnecting relations
+
+**Relation Connect Pattern:** Keys use `{modelName}_id` for has_one and `{modelName}_ids` for has_many (where `modelName` is the related model name or `known_as`).
+
+### `get_data`
+
+Query or list records from a model with optional filters, pagination, and search. Maps to Apito's `getModelData` system query.
+
+**Arguments:**
+
+- `model_name` (required): Name of the model
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Records per page (default: 10)
+- `where` (optional): JSON filter object
+- `status` (optional): Filter by status: `"all"`, `"draft"`, or `"published"`
+- `search` (optional): Text search query
+
+### `delete_data`
+
+Delete a record by ID. Maps to Apito's `deleteModelData` system mutation.
+
+**Arguments:**
+
+- `model_name` (required): Name of the model
+- `_id` (required): Document ID to delete
+
+### `duplicate_data`
+
+Duplicate a record by ID. Returns the new record ID. Maps to Apito's `duplicateModelData` system mutation.
+
+**Arguments:**
+
+- `model_name` (required): Name of the model
+- `_id` (required): Document ID to duplicate
+
+**Example: Create a category and connect an article to it**
+
+```json
+{
+  "tool": "upsert_data",
+  "arguments": {
+    "model_name": "Category",
+    "payload": {
+      "name": "Technology",
+      "slug": "technology"
+    }
+  }
+}
+```
+
+Returns the new category with `id`. Then create an article connected to that category:
+
+```json
+{
+  "tool": "upsert_data",
+  "arguments": {
+    "model_name": "Article",
+    "payload": {
+      "title": "My First Post",
+      "slug": "my-first-post"
+    },
+    "connect": {
+      "category_id": "<category-id-from-above>"
+    }
+  }
+}
+```
+
 ## MCP Resources
 
 Model schemas and the query structure guide are exposed as resources with URIs:
 
-- `apito://project-query-guide` - Apito query structure: **response shape** (id, data, meta), naming, `where` filters, connections (relations), pagination, mutations
+- `apito://project-query-guide` - Apito query structure: **response shape** (id, data, meta), **multiline/geo/media sub-selection** (content { html }, location { lat lon }, thumbnail { url }), naming, `where` filters, connections, pagination, mutations
 - `apito://model/{modelName}` - Access model schema as JSON
 
 ## Field Type Reference
@@ -267,6 +347,15 @@ Model schemas and the query structure guide are exposed as resources with URIs:
 - `geo` - Geographic coordinates
 - `object` - Object structure
 - `repeated` - Array structure
+
+### Query Sub-Selection (CRITICAL for multiline, geo, media, object, repeated)
+
+When querying these fields, you **must** use a sub-selection. Bare selection causes GraphQL error "must have a sub selection":
+
+- **multiline** → `content { html }` or `bio { text }` (pick `html`, `text`, or `markdown`)
+- **geo** → `location { lat lon }`
+- **media** → `thumbnail { url }` or `image { url }` (or other subfields)
+- **object** / **repeated** → select nested fields
 
 ### List Field Sub Types
 
@@ -502,6 +591,10 @@ You can test the MCP server connection using the MCP Inspector or by checking if
 - `get_model_schema`
 - `get_project_query_structure`
 - `add_relation`
+- `upsert_data`
+- `get_data`
+- `delete_data`
+- `duplicate_data`
 
 ## License
 
