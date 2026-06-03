@@ -1,6 +1,6 @@
 {
   "name": "apito-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for Apito API builder and headless CMS",
   "type": "module",
   "main": "src/index.ts",
@@ -9,6 +9,8 @@
     "deploy": "wrangler deploy",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test:versioning": "tsx test-schema-versioning.ts",
+    "playground:mcp": "tsx playground-mcp.ts",
     "start": "node dist/index.js"
   },
   "keywords": [

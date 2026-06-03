@@ -1,6 +1,10 @@
 # Apito MCP Server
 
+**Version 1.1.0** — see [CHANGELOG.md](./CHANGELOG.md).
+
 A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API builder and headless CMS. This server enables LLMs like Claude to interact with Apito's system GraphQL API to create models, manage fields, and build schemas.
+
+**System vs public GraphQL:** All MCP tools in this repo call the **system** GraphQL surface (console-style operations such as `getModelData`, model and field mutations). The **public** per-project GraphQL API (e.g. `taskList` for end users) can differ in auth, SaaS tenant routing, and nested relation resolution. When debugging “works in MCP / system but not on public,” compare endpoints and credentials; do not assume identical behavior.
 
 ## Features
 
@@ -12,6 +16,26 @@ A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API bui
 - **Error Handling**: Comprehensive error handling with detailed messages
 - **Cloudflare Workers**: Deploy as a remote MCP server for use with any MCP client
 - **Project-Dependent API Keys**: API keys are passed per-request, allowing different projects to use the same worker
+- **Schema versioning (pro)**: Stage schema mutations into a draft; verify via `get_effective_schema`; user publishes in Console — MCP never publishes
+
+## Schema versioning workflow (pro projects)
+
+When `PRO_SCHEMA_VERSIONING_ENABLED=true` on the engine, schema mutations **stage a draft** instead of applying immediately.
+
+1. Call **`get_schema_versioning_status`** at the start of schema work.
+2. Use **`create_model`**, **`add_field`**, **`add_relation`**, etc. — changes go to the draft changeset.
+3. Verify with **`get_effective_schema`** or **`get_schema_preview`** (`source: "draft"`).
+4. Review **`get_schema_change_plan`** for the publish timeline.
+5. End with **`summarize_schema_draft_for_review`** — tells the user to open **Console → Project Settings → Schema Changes → Publish manually**.
+6. **`upsert_data`** / **`get_data`** only work on **published (live)** models.
+
+Read tools accept optional **`source`**: `live` | `draft` | `effective` (default: effective when a draft exists). Resource: **`apito://schema-versioning-guide`**.
+
+**MCP never calls publish mutations** (`approveSchemaChanges`, etc.).
+
+### SaaS tenant headers
+
+For per-tenant database scope, set `TENANT_ID` or `APITO_TENANT_ID` in stdio env, or send **`X-Apito-Tenant-ID`** on remote worker requests (included in CORS allowlist).
 
 ### MCP Client Configuration (Cursor / mcp-remote)
 
@@ -27,10 +51,13 @@ Add the apito-mcp server to your MCP client config (e.g. Cursor `~/.cursor/mcp.j
         "mcp-remote",
         "https://apito-mcp.apito.workers.dev/sse",
         "--header",
-        "X-Apito-Key:${APITO_API_KEY}"
+        "X-Apito-Key:${APITO_API_KEY}",
+        "--header",
+        "X-Apito-Tenant-ID:${TENANT_ID}"
       ],
       "env": {
-        "APITO_API_KEY": "ak_your-api-key-here"
+        "APITO_API_KEY": "ak_your-api-key-here",
+        "TENANT_ID": "optional-tenant-id-for-saas"
       }
     }
   }
@@ -173,29 +200,57 @@ Delete a field from a model.
 
 ### `delete_model`
 
-Delete a model from the project. This will also delete all data in the model.
+**Irreversible** — removes the model from the project schema and deletes **all** rows in that model. Uses system `updateModel(type: delete, model_name)`. The engine blocks deletion until **all** schema relations involving this model are removed: `get_model_schema` for this model must show no `connections`, and no other model may list this model in `connections[].model`; use `delete_relation` for each edge first.
+
+**Safety:** You must pass `acknowledge_permanent_deletion: true` (literal boolean) or the tool refuses without calling the API. Get explicit human confirmation before using.
 
 **Arguments:**
 
 - `model_name` (required): Name of the model to delete
+- `acknowledge_permanent_deletion` (required): Must be `true`
 
 ### `list_models`
 
-List all models in the current project.
+List models in the project. Optional **`source`**: `live`, `draft`, or `effective` (default: effective when a draft exists).
 
-**Arguments:** None
+**Arguments:**
+
+- `source` (optional): Schema source (see Schema versioning workflow)
+
+### `get_schema_versioning_status`
+
+Returns whether schema versioning is enabled, active version, draft changeset id, and pending operation count.
+
+### `get_schema_preview`
+
+Read `schemaPreview` JSON. **`source`** required: `live`, `draft`, or `version` (with optional `version` int).
+
+### `get_effective_schema`
+
+Merged live+draft schema (console overlay parity). Primary verification tool after staging mutations.
+
+### `get_schema_change_plan`
+
+Publish plan from `schemaChangeExecutionRecords`. Optional `changeset_id`.
+
+### `summarize_schema_draft_for_review`
+
+Markdown summary of effective schema + change plan + user publish instructions.
 
 ### `get_model_schema`
 
-Get the complete schema for a model including all fields and their types.
+Get the complete schema for a model including all fields and their types. Optional **`source`** (default: effective when draft exists).
 
 **Arguments:**
 
 - `model_name` (required): Name of the model to get schema for
+- `source` (optional): `live`, `draft`, or `effective`
 
 ### `get_project_query_structure`
 
 Get the Apito project GraphQL query structure: which operations exist for each model. Apito uses a consistent naming convention: for model `Task` you get `task(_id)`, `taskList`, `taskListCount`, `createTask`, `updateTask`, `deleteTask`, `upsertTaskList`. **CamelCase matters** — model names are converted to camelCase for operation names.
+
+**Note:** Public project GraphQL reflects **published (live)** schema only. Draft-only models appear after Console publish.
 
 Use this tool when you need to know what GraphQL operations to call for querying or mutating project data. The schema is dynamic per project, so call this early to discover available operations.
 
@@ -320,8 +375,10 @@ Returns the new category with `id`. Then create an article connected to that cat
 
 Model schemas and the query structure guide are exposed as resources with URIs:
 
+- `apito://schema-versioning-guide` - Draft vs live schema, verification tools, MCP never publishes, data after publish
 - `apito://project-query-guide` - Apito query structure: **response shape** (id, data, meta), **multiline/geo/media sub-selection** (content { html }, location { lat lon }, thumbnail { url }), naming, `where` filters, connections, pagination, mutations
-- `apito://model/{modelName}` - Access model schema as JSON
+- `apito://field-design-guide` - Object vs repeated vs relation field selection rules
+- `apito://model/{modelName}` - Model schema as JSON (effective schema when draft exists)
 
 ## Field Type Reference
 
@@ -430,7 +487,10 @@ The MCP server provides basic CRUD operations. The LLM should parse schema defin
 
 ```bash
 # Type check
-npm run typecheck
+pnpm run typecheck
+
+# Schema versioning unit (+ optional live) tests
+npx tsx test-schema-versioning.ts
 
 # Build
 npm run build
@@ -581,6 +641,11 @@ Set environment variables in your MCP client configuration (see examples above).
 
 You can test the MCP server connection using the MCP Inspector or by checking if tools are available in your client. The server should expose:
 
+- `get_schema_versioning_status`
+- `get_schema_preview`
+- `get_effective_schema`
+- `get_schema_change_plan`
+- `summarize_schema_draft_for_review`
 - `create_model`
 - `add_field`
 - `update_field`

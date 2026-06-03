@@ -102,3 +102,44 @@ export interface GetModelDataResponse {
     results: ApitoDocument[];
 }
 
+export interface SchemaVersioningStatus {
+    enabled: boolean;
+    active_version: number;
+    has_draft: boolean;
+    changeset_id?: string;
+    changeset_status?: string;
+    pending_operations: number;
+}
+
+export type SchemaPreviewSource = 'live' | 'draft' | 'version';
+
+export interface SchemaChangeExecutionRecord {
+    id: string;
+    operation_id?: string;
+    sequence?: number;
+    scope_kind?: string;
+    scope_key?: string;
+    target_kind?: string;
+    target_name?: string;
+    action_key?: string;
+    impact?: string;
+    requires_ddl?: boolean;
+    retryable?: boolean;
+    system_message?: string;
+    project_message?: string;
+    local_status?: string;
+    remote_status?: string;
+    status?: string;
+    error?: string;
+    attempt_count?: number;
+    changeset_id?: string;
+    schema_version_id?: string;
+    created_at?: string;
+}
+
+export interface StagingMutationMeta {
+    staged: boolean;
+    message?: string;
+    modelName?: string;
+}
+

@@ -1,17 +1,44 @@
 import { GraphQLClient } from 'graphql-request';
-import type { GraphQLResponse, ValidationInput, ApitoModel, ApitoField, ApitoConnection, ApitoDocument, GetModelDataResponse } from './types.js';
+import type {
+  GraphQLResponse,
+  ValidationInput,
+  ApitoModel,
+  ApitoField,
+  ApitoConnection,
+  ApitoDocument,
+  GetModelDataResponse,
+  SchemaVersioningStatus,
+  SchemaPreviewSource,
+  SchemaChangeExecutionRecord,
+} from './types.js';
+
+/** Optional headers for SaaS / MCP (see engine pro_token_hook tenant resolution). */
+export type ApitoGraphQLClientOptions = {
+  /** Sent as `X-Apito-Tenant-ID` (preferred for per-tenant DB routing). */
+  tenantId?: string;
+  /** If true and tenantId is set, also sends `Cookie: temp_tenant_id=…` (same fallback order as the engine). */
+  sendTempTenantCookie?: boolean;
+};
 
 export class ApitoGraphQLClient {
   private client: GraphQLClient;
   private endpoint: string;
 
-  constructor(endpoint: string, token: string) {
+  constructor(endpoint: string, token: string, options: ApitoGraphQLClientOptions = {}) {
     this.endpoint = endpoint;
+    const headers: Record<string, string> = {
+      'X-Apito-Key': token,
+      'Content-Type': 'application/json',
+    };
+    const tid = options.tenantId?.trim();
+    if (tid) {
+      headers['X-Apito-Tenant-ID'] = tid;
+    }
+    if (options.sendTempTenantCookie && tid) {
+      headers['Cookie'] = `temp_tenant_id=${encodeURIComponent(tid)}`;
+    }
     this.client = new GraphQLClient(endpoint, {
-      headers: {
-        'X-Apito-Key': token,
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
   }
 
@@ -167,7 +194,6 @@ export class ApitoGraphQLClient {
     options: {
       newName?: string;
       singlePageModel?: boolean;
-      isCommonModel?: boolean;
     } = {}
   ): Promise<ApitoModel> {
     const mutation = `
@@ -176,14 +202,12 @@ export class ApitoGraphQLClient {
         $model_name: String!
         $new_name: String
         $single_page_model: Boolean
-        $is_common_model: Boolean
       ) {
         updateModel(
           type: $type
           model_name: $model_name
           new_name: $new_name
           single_page_model: $single_page_model
-          is_common_model: $is_common_model
         ) {
           name
           fields {
@@ -204,7 +228,6 @@ export class ApitoGraphQLClient {
 
     if (options.newName) variables.new_name = options.newName;
     if (options.singlePageModel !== undefined) variables.single_page_model = options.singlePageModel;
-    if (options.isCommonModel !== undefined) variables.is_common_model = options.isCommonModel;
 
     const result = await this.execute<{ updateModel: ApitoModel }>(
       mutation,
@@ -222,7 +245,6 @@ export class ApitoGraphQLClient {
       newName?: string;
       parentField?: string;
       singlePageModel?: boolean;
-      isRelation?: boolean;
       knownAs?: string;
       movedTo?: string;
       changedType?: string;
@@ -236,7 +258,6 @@ export class ApitoGraphQLClient {
         $new_name: String
         $parent_field: String
         $single_page_model: Boolean
-        $is_relation: Boolean
         $known_as: String
         $moved_to: String
         $changed_type: String
@@ -248,7 +269,6 @@ export class ApitoGraphQLClient {
           new_name: $new_name
           parent_field: $parent_field
           single_page_model: $single_page_model
-          is_relation: $is_relation
           known_as: $known_as
           moved_to: $moved_to
           changed_type: $changed_type
@@ -271,8 +291,7 @@ export class ApitoGraphQLClient {
     if (options.newName) variables.new_name = options.newName;
     if (options.parentField) variables.parent_field = options.parentField;
     if (options.singlePageModel !== undefined) variables.single_page_model = options.singlePageModel;
-    if (options.isRelation !== undefined) variables.is_relation = options.isRelation;
-    if (options.knownAs) variables.known_as = options.knownAs;
+    if (options.knownAs !== undefined) variables.known_as = options.knownAs;
     if (options.movedTo) variables.moved_to = options.movedTo;
     if (options.changedType) variables.changed_type = options.changedType;
 
@@ -282,6 +301,43 @@ export class ApitoGraphQLClient {
     );
 
     return result.modelFieldOperation;
+  }
+
+  /** System mutation `deleteConnectionFromModel` — removes schema connection (inverse of upsertConnectionToModel). */
+  async deleteConnectionFromModel(
+    fromModel: string,
+    toModel: string,
+    knownAs?: string
+  ): Promise<ApitoConnection[]> {
+    const mutation = `
+      mutation DeleteConnectionFromModel(
+        $from: String!
+        $to: String!
+        $known_as: String
+      ) {
+        deleteConnectionFromModel(from: $from, to: $to, known_as: $known_as) {
+          type
+          relation
+          model
+          known_as
+        }
+      }
+    `;
+
+    const variables: Record<string, any> = {
+      from: fromModel,
+      to: toModel,
+    };
+    if (knownAs !== undefined && knownAs !== '') {
+      variables.known_as = knownAs;
+    }
+
+    const result = await this.execute<{ deleteConnectionFromModel: ApitoConnection[] }>(
+      mutation,
+      variables
+    );
+
+    return result.deleteConnectionFromModel;
   }
 
   async upsertConnectionToModel(
@@ -392,6 +448,61 @@ export class ApitoGraphQLClient {
 
     const result = await this.execute<{ currentProject: any }>(query);
     return result.currentProject;
+  }
+
+  /**
+   * Current project metadata for MCP / tooling. Tries Pro extended fields when available.
+   */
+  async getProjectContextForMCP(): Promise<Record<string, unknown>> {
+    const extended = `
+      query GetProjectContextMCP {
+        currentProject {
+          id
+          name
+          description
+          project_type
+          tenant_model_name
+          per_tenant_separate_database
+        }
+      }
+    `;
+    try {
+      const result = await this.execute<{ currentProject: Record<string, unknown> }>(extended);
+      return result.currentProject ?? {};
+    } catch {
+      const basic = `
+        query GetProjectContextBasic {
+          currentProject {
+            id
+            name
+            description
+            project_type
+          }
+        }
+      `;
+      const result = await this.execute<{ currentProject: Record<string, unknown> }>(basic);
+      return result.currentProject ?? {};
+    }
+  }
+
+  /**
+   * Single-call relation overview (system GraphQL). Returns JSON: project_id, models, edges, mermaid.
+   */
+  async getProjectSchemaRelationGraph(projectId?: string): Promise<Record<string, unknown>> {
+    const query = `
+      query ProjectSchemaRelationGraph($_id: String) {
+        projectSchemaRelationGraph(_id: $_id)
+      }
+    `;
+    const variables: Record<string, unknown> = {};
+    if (projectId !== undefined && projectId !== '') {
+      variables._id = projectId;
+    }
+    const result = await this.execute<{ projectSchemaRelationGraph: Record<string, unknown> }>(
+      query,
+      variables
+    );
+    return (result.projectSchemaRelationGraph ?? {}) as Record<string, unknown>;
   }
 
   async upsertModelData(
@@ -539,6 +650,117 @@ export class ApitoGraphQLClient {
       { _id: id, model_name: modelName }
     );
     return result.deleteModelData;
+  }
+
+  async getSchemaVersioningStatus(): Promise<SchemaVersioningStatus> {
+    const query = `
+      query SchemaVersioningStatus {
+        schemaVersioningStatus {
+          enabled
+          active_version
+          has_draft
+          changeset_id
+          changeset_status
+          pending_operations
+        }
+      }
+    `;
+    const result = await this.execute<{ schemaVersioningStatus: SchemaVersioningStatus }>(query);
+    return result.schemaVersioningStatus ?? {
+      enabled: false,
+      active_version: 0,
+      has_draft: false,
+      pending_operations: 0,
+    };
+  }
+
+  async getSchemaPreview(source: SchemaPreviewSource = 'live', version?: number): Promise<string> {
+    const query = `
+      query SchemaPreview($source: String, $version: Int) {
+        schemaPreview(source: $source, version: $version)
+      }
+    `;
+    const variables: Record<string, unknown> = { source };
+    if (version !== undefined) {
+      variables.version = version;
+    }
+    const result = await this.execute<{ schemaPreview: string }>(query, variables);
+    return result.schemaPreview ?? '{}';
+  }
+
+  async getSchemaDiff(changesetId?: string): Promise<string> {
+    const query = `
+      query SchemaDiff($changeset_id: String) {
+        schemaDiff(changeset_id: $changeset_id)
+      }
+    `;
+    const variables: Record<string, unknown> = {};
+    if (changesetId) {
+      variables.changeset_id = changesetId;
+    }
+    const result = await this.execute<{ schemaDiff: string }>(query, variables);
+    return result.schemaDiff ?? '{}';
+  }
+
+  async getSchemaChangeExecutionRecords(
+    changesetId?: string,
+    options: { version?: number; limit?: number; offset?: number } = {}
+  ): Promise<SchemaChangeExecutionRecord[]> {
+    const query = `
+      query SchemaChangeExecutionRecords(
+        $changeset_id: String
+        $version: Int
+        $limit: Int
+        $offset: Int
+      ) {
+        schemaChangeExecutionRecords(
+          changeset_id: $changeset_id
+          version: $version
+          limit: $limit
+          offset: $offset
+        ) {
+          id
+          operation_id
+          sequence
+          scope_kind
+          scope_key
+          target_kind
+          target_name
+          action_key
+          impact
+          requires_ddl
+          retryable
+          system_message
+          project_message
+          local_status
+          remote_status
+          status
+          error
+          attempt_count
+          changeset_id
+          schema_version_id
+          created_at
+        }
+      }
+    `;
+    const variables: Record<string, unknown> = {};
+    if (changesetId) {
+      variables.changeset_id = changesetId;
+    }
+    if (options.version !== undefined) {
+      variables.version = options.version;
+    }
+    if (options.limit !== undefined) {
+      variables.limit = options.limit;
+    }
+    if (options.offset !== undefined) {
+      variables.offset = options.offset;
+    }
+    const result = await this.execute<{ schemaChangeExecutionRecords: SchemaChangeExecutionRecord[] }>(
+      query,
+      variables
+    );
+    return result.schemaChangeExecutionRecords ?? [];
   }
 
   async duplicateModelData(modelName: string, id: string): Promise<{ id: string }> {

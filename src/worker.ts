@@ -22,6 +22,7 @@ function getOrCreateServer(request: Request, env: Env): ApitoMCPServer {
     const authHeader = request.headers.get('Authorization');
     const apiKeyHeader = request.headers.get('X-Apito-Key');
     const queryApiKey = url.searchParams.get('api_key');
+    const tenantHeader = request.headers.get('X-Apito-Tenant-ID');
 
     let authToken: string | null = null;
 
@@ -45,13 +46,16 @@ function getOrCreateServer(request: Request, env: Env): ApitoMCPServer {
         graphqlEndpoint = graphqlEndpoint.replace('/secured/graphql', '/system/graphql');
     }
 
-    // Cache server instances per API key
-    const cacheKey = `${authToken}:${graphqlEndpoint}`;
+    const tenantId = tenantHeader?.trim() || undefined;
+    const graphqlClientOptions = tenantId ? { tenantId } : {};
+
+    // Cache server instances per API key + tenant + endpoint
+    const cacheKey = `${authToken}:${graphqlEndpoint}:${tenantId ?? ''}`;
     if (serverCache.has(cacheKey)) {
         return serverCache.get(cacheKey)!;
     }
 
-    const server = new ApitoMCPServer(graphqlEndpoint, authToken);
+    const server = new ApitoMCPServer(graphqlEndpoint, authToken, graphqlClientOptions);
     serverCache.set(cacheKey, server);
     return server;
 }
@@ -68,7 +72,7 @@ export default {
                 headers: {
                     'Access-Control-Allow-Origin': '*',
                     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Apito-Key',
+                    'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Apito-Key, X-Apito-Tenant-ID',
                     'Access-Control-Max-Age': '86400',
                 },
             });

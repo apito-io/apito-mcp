@@ -8,16 +8,32 @@ import {
     ListResourcesRequestSchema,
     ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { ApitoGraphQLClient } from './graphql-client.js';
+import { ApitoGraphQLClient, type ApitoGraphQLClientOptions } from './graphql-client.js';
+import {
+    SchemaVersioningContext,
+    detectStagingResponse,
+    formatUserPublishReminder,
+    buildRelationGraphFromModels,
+    type SchemaSource,
+} from './schema-versioning.js';
 import { SchemaParser } from './schema-parser.js';
 import { FieldResolver } from './field-resolver.js';
-import type { ParsedField, ValidationInput } from './types.js';
+import type { ParsedField, ValidationInput, SchemaPreviewSource } from './types.js';
+
+const SOURCE_PARAM_SCHEMA = {
+    type: 'string',
+    description:
+        'Schema source: live (published only), draft (staged changeset only), effective (merged live+draft when versioning enabled). Default: effective when versioning has draft, else live.',
+    enum: ['live', 'draft', 'effective'],
+} as const;
 
 export class ApitoMCPServer {
     private server: Server;
     private client: ApitoGraphQLClient | null = null;
     private graphqlEndpoint: string;
     private authToken: string;
+    private graphqlClientOptions: ApitoGraphQLClientOptions;
+    private schemaCtx: SchemaVersioningContext | null = null;
     // Store handler references for HTTP transport
     private listToolsHandler?: (request: any) => Promise<any>;
     private callToolHandler?: (request: any) => Promise<any>;
@@ -26,9 +42,14 @@ export class ApitoMCPServer {
     private listResourcesHandler?: (request: any) => Promise<any>;
     private readResourceHandler?: (request: any) => Promise<any>;
 
-    constructor(graphqlEndpoint: string, apiKey: string) {
+    constructor(
+        graphqlEndpoint: string,
+        apiKey: string,
+        graphqlClientOptions: ApitoGraphQLClientOptions = {}
+    ) {
         this.graphqlEndpoint = graphqlEndpoint;
-        this.authToken = apiKey; // Store as authToken for backward compatibility
+        this.authToken = apiKey;
+        this.graphqlClientOptions = graphqlClientOptions;
         this.server = new Server(
             {
                 name: 'apito-mcp',
@@ -151,13 +172,80 @@ export class ApitoMCPServer {
         }
     }
 
+    private buildGraphQLClientOptions(): ApitoGraphQLClientOptions {
+        if (this.graphqlClientOptions.tenantId || this.graphqlClientOptions.sendTempTenantCookie) {
+            return this.graphqlClientOptions;
+        }
+        const tenantRaw =
+            typeof process !== 'undefined'
+                ? process.env?.TENANT_ID || process.env?.APITO_TENANT_ID
+                : undefined;
+        const tenantId = typeof tenantRaw === 'string' ? tenantRaw.trim() : '';
+        const sendTemp =
+            typeof process !== 'undefined' && process.env?.APITO_MCP_TEMP_TENANT_COOKIE === 'true';
+        return {
+            tenantId: tenantId || undefined,
+            sendTempTenantCookie: sendTemp,
+        };
+    }
+
+    private getSchemaContext(): SchemaVersioningContext {
+        this.ensureClient();
+        if (!this.schemaCtx) {
+            this.schemaCtx = new SchemaVersioningContext(this.client!);
+        }
+        return this.schemaCtx;
+    }
+
+    private async formatStagingMutationResponse(
+        operationLabel: string,
+        rawResult: unknown
+    ): Promise<string> {
+        const staging = detectStagingResponse(rawResult);
+        const status = await this.getSchemaContext().getStatus(true);
+        if (staging.staged || (status.enabled && status.has_draft)) {
+            const reminder = formatUserPublishReminder(status);
+            return (
+                `**Staged (not published):** ${operationLabel}. ` +
+                (staging.message ? staging.message + ' ' : '') +
+                `Use get_effective_schema or get_schema_change_plan to verify the draft.` +
+                reminder +
+                `\n\nEngine response:\n${JSON.stringify(rawResult, null, 2)}`
+            );
+        }
+        return `Successfully applied: ${operationLabel}.\n\n${JSON.stringify(rawResult, null, 2)}`;
+    }
+
+    private async resolveSchemaSource(explicit?: string): Promise<SchemaSource> {
+        if (explicit === 'live' || explicit === 'draft' || explicit === 'effective') {
+            return explicit;
+        }
+        const status = await this.getSchemaContext().getStatus();
+        if (status.enabled && status.has_draft) {
+            return 'effective';
+        }
+        return 'live';
+    }
+
+    private ensureClient() {
+        if (!this.client) {
+            this.client = new ApitoGraphQLClient(
+                this.graphqlEndpoint,
+                this.authToken,
+                this.buildGraphQLClientOptions()
+            );
+            this.schemaCtx = null;
+        }
+    }
+
     private setupHandlers() {
         // List available tools
         this.listToolsHandler = async () => ({
             tools: [
                 {
                     name: 'create_model',
-                    description: 'Create a new model in Apito. Models are collections that define the structure of your data.',
+                    description:
+                        'Create a new model. On pro engines with schema versioning, this **stages** a draft (not published). Verify with get_effective_schema; user must publish in Console → Schema Changes before data tools work.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -176,11 +264,15 @@ export class ApitoMCPServer {
                 },
                 {
                     name: 'add_field',
-                    description: `Add a field to an existing model. You must specify field_type and input_type explicitly. Valid combinations:
+                    description: `Add a field to an existing model. You must specify field_type and input_type explicitly.
+
+Apito uses the names **object** and **repeated** in schema (not a separate type literally called "array"). To create an **array of structured rows** (line items, nested rows with subfields), use **repeated** first: field_type="repeated", input_type="repeated", is_object_field=true — then add subfields under it. **object** is for a single nested object only.
+
+Valid combinations:
 - Text Field: field_type="text", input_type="string" (Single line text input)
 - Rich Text Field: field_type="multiline", input_type="string" (Multiline editor with formatting)
 - DateTime Field: field_type="date", input_type="string" (Date & Time input)
-- Dynamic Array: field_type="list", field_sub_type="dynamicList", input_type="string" (Flexible list allowing multiple items)
+- Dynamic Array: field_type="list", field_sub_type="dynamicList", input_type="string" (Flexible list of simple values — not typed array-of-object; for that use repeated)
 - Dropdown Menu: field_type="list", field_sub_type="dropdown", input_type="string" (Predefined list for single selection). REQUIRES validation.fixed_list_elements (array of strings) and validation.fixed_list_element_type="string"
 - Multi-Checkbox Selector: field_type="list", field_sub_type="multiSelect", input_type="string" (Allows selecting multiple options). REQUIRES validation.fixed_list_elements (array of strings) and validation.fixed_list_element_type="string"
 - Boolean Field: field_type="boolean", input_type="bool" (True or False toggle)
@@ -188,9 +280,10 @@ export class ApitoMCPServer {
 - Integer Field: field_type="number", input_type="int" (Whole numbers only)
 - Decimal Field: field_type="number", input_type="double" (Decimal numbers)
 - GeoPoint Field: field_type="geo", input_type="geo" (Latitude & Longitude)
-- Object Schema: field_type="object", input_type="object" (Single object with multiple fields, set is_object_field=true)
-- Array Schema: field_type="repeated", input_type="repeated" (List of objects with multiple fields, set is_object_field=true)
-For nested fields (objects/arrays), set parent_field and is_object_field appropriately.`,
+- Object (single nested object): field_type="object", input_type="object" (set is_object_field=true)
+- Repeated (array of objects / structured array): field_type="repeated", input_type="repeated" (set is_object_field=true; add child fields after)
+
+For nested subfields, set parent_field and is_object_field appropriately. For GraphQL selection shapes, call get_field_design_guide.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -204,7 +297,8 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                             },
                             field_type: {
                                 type: 'string',
-                                description: 'Field type. Valid values: text, multiline, number, date, boolean, media, object, repeated, list, geo',
+                                description:
+                                    'Apito field_type. Use repeated (not a separate "array" type) for array-of-object / structured rows. Valid values: text, multiline, number, date, boolean, media, object, repeated, list, geo',
                                 enum: ['text', 'multiline', 'number', 'date', 'boolean', 'media', 'object', 'repeated', 'list', 'geo'],
                             },
                             input_type: {
@@ -219,11 +313,13 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                             },
                             parent_field: {
                                 type: 'string',
-                                description: 'Parent field name if this is a nested field (for objects/arrays)',
+                                description:
+                                    'Parent field identifier when adding a subfield under object or repeated (structured array)',
                             },
                             is_object_field: {
                                 type: 'boolean',
-                                description: 'Whether this field is an object/array field that can contain nested fields. Set to true for object and repeated field types.',
+                                description:
+                                    'Set true when this field is a container: object (single nested object) or repeated (array of objects). Required for object/repeated before adding children.',
                                 default: false,
                             },
                             field_description: {
@@ -324,7 +420,8 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                 },
                 {
                     name: 'delete_field',
-                    description: 'Delete a field from a model',
+                    description:
+                        'Delete a normal (non-relation) field, or a model connection if you set is_relation=true (calls system deleteConnectionFromModel). Prefer delete_relation for removing links. **One call removes the connection on both models** (bidirectional); do not delete again from the peer model. For is_relation: model_name = either endpoint; field_name = connections[].model from get_model_schema(model_name), NOT a document field identifier.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -334,11 +431,22 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                             },
                             field_name: {
                                 type: 'string',
-                                description: 'Field identifier to delete',
+                                description:
+                                    'For normal fields: field identifier. For is_relation=true: the peer model name exactly as in get_model_schema → connections[].model (often PascalCase / different from payload field keys).',
                             },
                             parent_field: {
                                 type: 'string',
                                 description: 'Parent field name if this is a nested field',
+                            },
+                            is_relation: {
+                                type: 'boolean',
+                                description:
+                                    'True only to drop a schema connection (same as delete_relation). **Call once** — the engine removes forward and reverse edges; do not run a second delete from the other model. False/omit for scalar/object/repeated fields.',
+                            },
+                            known_as: {
+                                type: 'string',
+                                description:
+                                    'Must match get_model_schema → connections[].known_as for that edge (use empty string \"\" when there is no custom known_as).',
                             },
                         },
                         required: ['model_name', 'field_name'],
@@ -346,29 +454,100 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                 },
                 {
                     name: 'delete_model',
-                    description: 'Delete a model from the project. This will also delete all data in the model.',
+                    description:
+                        '**DANGER — IRREVERSIBLE.** Removes the model from the project **schema** and deletes **all** documents in that model. **Hard requirement:** the engine refuses if this model still has schema edges — inspect `get_model_schema(model_name).connections` (must be empty) **and** every other model via `get_model_schema` so no `connections[].model` equals this model; remove each edge with `delete_relation` first (once per edge). Uses system `updateModel(type: delete, model_name)`. **WARNING 1:** You cannot undo this from the MCP. **WARNING 2:** Call only after explicit human confirmation. **Required:** `acknowledge_permanent_deletion` must be `true` or the tool refuses without calling the API.',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             model_name: {
                                 type: 'string',
-                                description: 'Name of the model to delete',
+                                description: 'Canonical model name to delete (e.g. stock_movement)',
+                            },
+                            acknowledge_permanent_deletion: {
+                                type: 'boolean',
+                                description:
+                                    'MUST be the literal boolean true. Refused if false, omitted, or null. This is an intentional safety gate so agents do not delete models by accident.',
                             },
                         },
-                        required: ['model_name'],
+                        required: ['model_name', 'acknowledge_permanent_deletion'],
                     },
                 },
                 {
-                    name: 'list_models',
-                    description: 'List all models in the current Apito project',
+                    name: 'get_schema_versioning_status',
+                    description:
+                        'Check whether pro schema versioning is enabled and if a draft changeset exists. Call this at the start of any schema-building session. MCP stages mutations but never publishes — user must publish in Console → Schema Changes.',
                     inputSchema: {
                         type: 'object',
                         properties: {},
                     },
                 },
                 {
+                    name: 'get_schema_preview',
+                    description:
+                        'Read full project schema JSON from schemaPreview (live, draft, or a published version). Use draft after staging mutations to verify staged work.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            source: {
+                                type: 'string',
+                                description: 'Preview source: live (published), draft (staged changeset), or version (requires version int).',
+                                enum: ['live', 'draft', 'version'],
+                            },
+                            version: {
+                                type: 'number',
+                                description: 'Published schema version number when source is version.',
+                            },
+                        },
+                        required: ['source'],
+                    },
+                },
+                {
+                    name: 'get_effective_schema',
+                    description:
+                        'Merged live+draft schema (console overlay parity). Primary verification tool after staging — answers what will exist after the user publishes.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
+                    name: 'get_schema_change_plan',
+                    description:
+                        'Publish plan from schemaChangeExecutionRecords: sequence, action, impact, local/remote status. Pending until user publishes in Console.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            changeset_id: {
+                                type: 'string',
+                                description: 'Optional changeset id; defaults to active draft.',
+                            },
+                        },
+                    },
+                },
+                {
+                    name: 'summarize_schema_draft_for_review',
+                    description:
+                        'Markdown summary of effective draft schema + change plan + mandatory user instruction to review and publish in Console. Use at end of schema-building sessions.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
+                    name: 'list_models',
+                    description:
+                        'List models in the project. On pro engines with an active draft, defaults to effective (live+draft merge). Use source=live for published-only.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            source: SOURCE_PARAM_SCHEMA,
+                        },
+                    },
+                },
+                {
                     name: 'get_model_schema',
-                    description: 'Get the complete schema for a model including all fields and their types',
+                    description:
+                        'Get fields and connections for a model. Defaults to effective schema when a draft exists. Staged models/fields are visible with source=effective or draft. To remove a schema connection: use delete_relation **once** (both models updated automatically). Read connections[].model and known_as from get_model_schema. Do not guess from document field names. For object/repeated GraphQL shapes, call get_field_design_guide.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -376,13 +555,49 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                                 type: 'string',
                                 description: 'Name of the model to get schema for',
                             },
+                            source: SOURCE_PARAM_SCHEMA,
                         },
                         required: ['model_name'],
                     },
                 },
                 {
+                    name: 'get_project_context',
+                    description:
+                        'Read current project metadata from system GraphQL (id, name, project_type, and Pro fields tenant_model_name / per_tenant_separate_database when available). Use before data-plane calls to know if tenant scoping is required; pair with TENANT_ID / X-Apito-Tenant-ID env in MCP config.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
+                    name: 'get_relation_graph',
+                    description:
+                        'Relation overview as JSON edges + Mermaid. For draft/effective sources, built from schema preview (engine graph query is live-only). To remove a connection, use delete_relation **once** per edge.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            project_id: {
+                                type: 'string',
+                                description:
+                                    'Optional; must match the active project id if set (same rule as projectModelsInfo _id). Omit for current project.',
+                            },
+                            source: SOURCE_PARAM_SCHEMA,
+                        },
+                    },
+                },
+                {
                     name: 'get_project_query_structure',
-                    description: "Get the Apito project GraphQL query structure: which operations exist for each model. For model 'Task' you get task(_id), taskList, taskListCount, createTask, updateTask, deleteTask, upsertTaskList. CamelCase matters. Use this to know what to call when querying or mutating project data.",
+                    description:
+                        "Get the Apito project GraphQL query structure: which operations exist for each model. For model 'Task' you get task(_id), taskList, taskListCount, createTask, updateTask, deleteTask, upsertTaskList. CamelCase matters. For how to shape field selections (object vs repeated vs relation — avoid an extra `data` node inside nested fields), call get_field_design_guide or read apito://field-design-guide.",
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
+                    name: 'get_field_design_guide',
+                    description:
+                        'Apito field model: object = single nested object; repeated = structured array (array of objects) — use repeated when creating that kind of array. Also covers GraphQL selections (no inner data on object/repeated), _id on rows, vs document root and relations.',
                     inputSchema: {
                         type: 'object',
                         properties: {},
@@ -390,7 +605,8 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                 },
                 {
                     name: 'add_relation',
-                    description: 'Create a relation between two models. Relations define how models are connected (e.g., a Patient has many DentalAssessments, or a DentalAssessment belongs to one Patient).',
+                    description:
+                        'Create a relation between two models. To remove it later, call **delete_relation once** (bidirectional cleanup — do not delete from both models). Same from/to/known_as as add_relation, or delete_field with is_relation=true.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -418,6 +634,32 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                             },
                         },
                         required: ['from_model', 'to_model', 'forward_connection_type', 'reverse_connection_type'],
+                    },
+                },
+                {
+                    name: 'delete_relation',
+                    description:
+                        'Remove one model-to-model **schema** connection (inverse of add_relation). Calls deleteConnectionFromModel(from, to, known_as). **Bidirectional: a single call deletes the link on both models** (e.g. food↔category) — never call delete_relation twice swapping from/to for the same edge. Pick one side as from_model and pass the peer as to_model using get_model_schema(from_model).connections[].model and known_as.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            from_model: {
+                                type: 'string',
+                                description:
+                                    'Either endpoint of the connection (same as one side of add_relation). Must match get_model_schema so you can read connections[].model for the peer.',
+                            },
+                            to_model: {
+                                type: 'string',
+                                description:
+                                    'The other model — exact connections[]..model from get_model_schema(from_model). Not a second delete target: one delete_relation already clears both sides.',
+                            },
+                            known_as: {
+                                type: 'string',
+                                description:
+                                    'Must match that connection\'s known_as; omit or use \"\" when the relation had no custom known_as in add_relation.',
+                            },
+                        },
+                        required: ['from_model', 'to_model'],
                     },
                 },
                 {
@@ -461,7 +703,8 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                 },
                 {
                     name: 'get_data',
-                    description: 'Query or list records from a model with optional filters, pagination, and search.',
+                    description:
+                        'Query or list records from a model with optional filters, pagination, and search. When choosing which subfields to request, follow get_field_design_guide: nested object/repeated fields do not use an inner `data { }` wrapper; relations to other models do.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -536,14 +779,22 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
 
         // Handle tool calls
         this.callToolHandler = async (request) => {
-            if (!this.client) {
-                this.client = new ApitoGraphQLClient(this.graphqlEndpoint, this.authToken);
-            }
+            this.ensureClient();
 
             const { name, arguments: args } = request.params;
 
             try {
                 switch (name) {
+                    case 'summarize_schema_draft_for_review':
+                        return await this.handleSummarizeSchemaDraftForReview();
+                    case 'get_schema_versioning_status':
+                        return await this.handleGetSchemaVersioningStatus();
+                    case 'get_schema_preview':
+                        return await this.handleGetSchemaPreview(args as any);
+                    case 'get_effective_schema':
+                        return await this.handleGetEffectiveSchema();
+                    case 'get_schema_change_plan':
+                        return await this.handleGetSchemaChangePlan(args as any);
                     case 'create_model':
                         return await this.handleCreateModel(args as any);
                     case 'add_field':
@@ -557,13 +808,21 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
                     case 'delete_model':
                         return await this.handleDeleteModel(args as any);
                     case 'list_models':
-                        return await this.handleListModels();
+                        return await this.handleListModels(args as any);
                     case 'get_model_schema':
                         return await this.handleGetModelSchema(args as any);
+                    case 'get_project_context':
+                        return await this.handleGetProjectContext();
+                    case 'get_relation_graph':
+                        return await this.handleGetRelationGraph(args as any);
                     case 'get_project_query_structure':
                         return await this.handleGetProjectQueryStructure();
+                    case 'get_field_design_guide':
+                        return await this.handleGetFieldDesignGuide();
                     case 'add_relation':
                         return await this.handleAddRelation(args as any);
+                    case 'delete_relation':
+                        return await this.handleDeleteRelation(args as any);
                     case 'upsert_data':
                         return await this.handleUpsertData(args as any);
                     case 'get_data':
@@ -642,24 +901,36 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
 
         // List available resources (model schemas + query guide)
         this.listResourcesHandler = async (_request: any) => {
-            if (!this.client) {
-                this.client = new ApitoGraphQLClient(this.graphqlEndpoint, this.authToken);
-            }
+            this.ensureClient();
 
             try {
-                const models = await this.client.getProjectModelsInfo();
+                const { models, sourceUsed } = await this.getSchemaContext().resolveModels('effective');
+                const status = await this.getSchemaContext().getStatus();
 
                 const resources: { uri: string; name: string; description: string; mimeType: string }[] = [
+                    {
+                        uri: 'apito://schema-versioning-guide',
+                        name: 'Apito schema versioning guide',
+                        description: 'Draft vs live schema, verification tools, MCP never publishes, data after publish',
+                        mimeType: 'text/markdown',
+                    },
                     {
                         uri: 'apito://project-query-guide',
                         name: 'Apito Project Query Structure Guide',
                         description: 'where filters, connections (relations), pagination, mutations, and what is possible vs not',
                         mimeType: 'text/markdown',
                     },
+                    {
+                        uri: 'apito://field-design-guide',
+                        name: 'Apito field design & GraphQL selection guide',
+                        description:
+                            'object vs repeated vs relation; when id/data applies; _id on array rows; no inner data node on nested fields',
+                        mimeType: 'text/markdown',
+                    },
                     ...models.map(model => ({
                         uri: `apito://model/${model.name}`,
                         name: `Model: ${model.name}`,
-                        description: `Schema for ${model.name} model with ${model.fields?.length || 0} fields`,
+                        description: `Schema for ${model.name} (${sourceUsed}${status.has_draft ? ', includes draft' : ''}) with ${model.fields?.length || 0} fields`,
                         mimeType: 'application/json',
                     })),
                 ];
@@ -675,15 +946,39 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
 
         // Read resource (get model schema)
         this.readResourceHandler = async (request: any) => {
-            if (!this.client) {
-                this.client = new ApitoGraphQLClient(this.graphqlEndpoint, this.authToken);
-            }
+            this.ensureClient();
 
             const { uri } = request.params;
 
             // Static resource: apito://project-query-guide
+            if (uri === 'apito://schema-versioning-guide') {
+                const guide = this.getSchemaVersioningGuideContent();
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: guide,
+                        },
+                    ],
+                };
+            }
+
             if (uri === 'apito://project-query-guide') {
                 const guide = this.getProjectQueryGuideContent();
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: guide,
+                        },
+                    ],
+                };
+            }
+
+            if (uri === 'apito://field-design-guide') {
+                const guide = this.getFieldDesignGuideContent();
                 return {
                     contents: [
                         {
@@ -698,19 +993,20 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
             // Parse URI: apito://model/{modelName}
             const match = uri.match(/^apito:\/\/model\/(.+)$/);
             if (!match) {
-                throw new Error(`Invalid resource URI: ${uri}. Expected format: apito://model/{modelName} or apito://project-query-guide`);
+                throw new Error(
+                    `Invalid resource URI: ${uri}. Expected format: apito://model/{modelName}, apito://project-query-guide, apito://field-design-guide, or apito://schema-versioning-guide`
+                );
             }
 
             const modelName = match[1];
 
             try {
-                const models = await this.client.getProjectModelsInfo(modelName);
+                const { models } = await this.getSchemaContext().resolveModels('effective');
+                const model = models.find((m) => m.name.toLowerCase() === modelName.toLowerCase());
 
-                if (models.length === 0) {
-                    throw new Error(`Model "${modelName}" not found`);
+                if (!model) {
+                    throw new Error(`Model "${modelName}" not found in effective schema`);
                 }
-
-                const model = models[0];
 
                 return {
                     contents: [
@@ -732,16 +1028,21 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
     private async handleCreateModel(args: { model_name: string; single_record?: boolean }) {
         this.validateModelName(args.model_name);
 
-        const models = await this.client!.addModelToProject(
+        const rawResult = await this.client!.addModelToProject(
             args.model_name,
             args.single_record
+        );
+
+        const text = await this.formatStagingMutationResponse(
+            `create model "${args.model_name}"`,
+            rawResult
         );
 
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully created model "${args.model_name}".\n\nModel details:\n${JSON.stringify(models[0], null, 2)}`,
+                    text,
                 },
             ],
         };
@@ -818,11 +1119,16 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
             }
         );
 
+        const text = await this.formatStagingMutationResponse(
+            `add field "${args.field_label}" to "${args.model_name}"`,
+            field
+        );
+
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully added field "${args.field_label}" to model "${args.model_name}".\n\nField details:\n${JSON.stringify(field, null, 2)}`,
+                    text,
                 },
             ],
         };
@@ -850,11 +1156,16 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
             }
         );
 
+        const text = await this.formatStagingMutationResponse(
+            `update field "${args.field_name}" on "${args.model_name}"`,
+            field
+        );
+
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully updated field "${args.field_name}" in model "${args.model_name}".\n\nField details:\n${JSON.stringify(field, null, 2)}`,
+                    text,
                 },
             ],
         };
@@ -876,11 +1187,16 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
             }
         );
 
+        const text = await this.formatStagingMutationResponse(
+            `rename field "${args.field_name}" to "${args.new_name}" on "${args.model_name}"`,
+            field
+        );
+
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully renamed field "${args.field_name}" to "${args.new_name}" in model "${args.model_name}".\n\nField details:\n${JSON.stringify(field, null, 2)}`,
+                    text,
                 },
             ],
         } as any;
@@ -890,18 +1206,72 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
         model_name: string;
         field_name: string;
         parent_field?: string;
+        is_relation?: boolean;
+        known_as?: string;
     }) {
-        const field = await this.client!.modelFieldOperation(
-            'delete',
-            args.model_name,
-            args.field_name,
-            { parentField: args.parent_field }
+        if (args.is_relation === true) {
+            const knownAs = args.known_as !== undefined ? args.known_as : '';
+            const removed = await this.client!.deleteConnectionFromModel(
+                args.model_name,
+                args.field_name,
+                knownAs === '' ? undefined : knownAs
+            );
+            const text = await this.formatStagingMutationResponse(
+                `delete connection from "${args.model_name}" to "${args.field_name}"`,
+                removed
+            );
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text:
+                            `Removed connection from "${args.model_name}" to "${args.field_name}" (known_as: ${JSON.stringify(knownAs)}). **Bidirectional:** the peer model is already updated — do not delete again from the other model for this same edge.\n\n` +
+                            text,
+                    },
+                ],
+            };
+        }
+
+        const field = await this.client!.modelFieldOperation('delete', args.model_name, args.field_name, {
+            parentField: args.parent_field,
+            knownAs: args.known_as,
+        });
+        const text = await this.formatStagingMutationResponse(
+            `delete field "${args.field_name}" from "${args.model_name}"`,
+            field
         );
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully deleted field "${args.field_name}" from model "${args.model_name}".`,
+                    text,
+                },
+            ],
+        };
+    }
+
+    private async handleDeleteRelation(args: {
+        from_model: string;
+        to_model: string;
+        known_as?: string;
+    }) {
+        const knownAs = args.known_as !== undefined ? args.known_as : '';
+        const removed = await this.client!.deleteConnectionFromModel(
+            args.from_model,
+            args.to_model,
+            knownAs === '' ? undefined : knownAs
+        );
+        const text = await this.formatStagingMutationResponse(
+            `delete relation ${args.from_model} → ${args.to_model}`,
+            removed
+        );
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text:
+                        `Removed connection from "${args.from_model}" to "${args.to_model}" (known_as: ${JSON.stringify(knownAs)}). **Bidirectional:** the peer model is already updated — do not call delete_relation again swapping from/to for this same edge.\n\n` +
+                        text,
                 },
             ],
         };
@@ -909,36 +1279,52 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
 
     private async handleDeleteModel(args: {
         model_name: string;
+        acknowledge_permanent_deletion?: boolean;
     }) {
-        const model = await this.client!.updateModel(
-            'delete',
-            args.model_name
+        if (args.acknowledge_permanent_deletion !== true) {
+            throw new Error(
+                'Refused: delete_model requires acknowledge_permanent_deletion: true (literal boolean). ' +
+                    'This operation permanently removes the model and all its data from the project. ' +
+                    'Do not call this tool unless a human explicitly confirmed the model name and consequences.'
+            );
+        }
+        const model = await this.client!.updateModel('delete', args.model_name);
+        const text = await this.formatStagingMutationResponse(
+            `delete model "${args.model_name}"`,
+            model
         );
+        const warn =
+            '**IRREVERSIBLE WHEN PUBLISHED** — Removing a model deletes its data after publish. Verify backups first.\n\n';
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully deleted model "${args.model_name}" and all its data.`,
+                    text: warn + text,
                 },
             ],
         };
     }
 
-    private async handleListModels() {
-        const models = await this.client!.getProjectModelsInfo();
+    private async handleListModels(args: { source?: string } = {}) {
+        const source = await this.resolveSchemaSource(args.source);
+        const { models, status, sourceUsed } = await this.getSchemaContext().resolveModels(source);
+        const reminder = formatUserPublishReminder(status);
 
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Found ${models.length} model(s):\n\n${models.map(m => `- ${m.name} (${m.fields?.length || 0} fields)`).join('\n')}`,
+                    text:
+                        `Found ${models.length} model(s) (source: ${sourceUsed}):\n\n` +
+                        models.map((m) => `- ${m.name} (${m.fields?.length || 0} fields)`).join('\n') +
+                        reminder,
                 },
             ],
         };
     }
 
     private async handleGetProjectQueryStructure() {
-        const models = await this.client!.getProjectModelsInfo();
+        const { models } = await this.getSchemaContext().resolveModels('live');
         const mapping = models.map((m) => {
             const singular = this.modelNameToCamelCase(m.name);
             return {
@@ -959,10 +1345,72 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
             `|-------|-----------|------|-------|--------|--------|--------|--------|\n` +
             mapping.map((r) => `| ${r.model} | ${r.singular} | ${r.list} | ${r.count} | ${r.create} | ${r.update} | ${r.delete} | ${r.upsert} |`).join('\n') +
             `\n\nExample for Task: \`task(_id: "…")\`, \`taskList\`, \`createTask\`, \`updateTask\`, \`deleteTask\`, \`upsertTaskList\`\n\n` +
-            `Use resource \`apito://project-query-guide\` for full guide.`;
+            `**Note:** Public project GraphQL reflects **published (live)** schema only. Draft-only models from MCP staging appear here only after Console publish.\n\n` +
+            `Use resource \`apito://project-query-guide\` for full guide.\n\n` +
+            `**Nested field selections:** tool \`get_field_design_guide\` or resource \`apito://field-design-guide\` — object/repeated fields are not second documents; do not add an inner \`data { }\` around them.`;
 
         return {
             content: [{ type: 'text' as const, text }],
+        };
+    }
+
+    private async handleGetFieldDesignGuide() {
+        return {
+            content: [{ type: 'text' as const, text: this.getFieldDesignGuideContent() }],
+        };
+    }
+
+    private async handleGetProjectContext() {
+        const ctx = await this.client!.getProjectContextForMCP();
+        const opts = this.buildGraphQLClientOptions();
+        const tenantHint =
+            opts.tenantId || opts.sendTempTenantCookie
+                ? `\n\nMCP is sending tenant context (X-Apito-Tenant-ID${opts.sendTempTenantCookie ? ' + temp_tenant_id cookie' : ''}) from env.`
+                : '\n\nNo TENANT_ID / APITO_TENANT_ID in env — for SaaS per-tenant DB, set tenant on the MCP process.';
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: `Current project (system GraphQL):\n\n${JSON.stringify(ctx, null, 2)}${tenantHint}`,
+                },
+            ],
+        };
+    }
+
+    private async handleGetRelationGraph(args: { project_id?: string; source?: string }) {
+        const source = await this.resolveSchemaSource(args?.source);
+        if (source === 'live') {
+            const graph = await this.client!.getProjectSchemaRelationGraph(args?.project_id);
+            const mermaid = typeof graph.mermaid === 'string' ? graph.mermaid : '';
+            const rest = { ...graph };
+            delete (rest as { mermaid?: string }).mermaid;
+
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text:
+                            `Relation graph (live, from projectSchemaRelationGraph).\n\n## JSON\n${JSON.stringify(rest, null, 2)}\n\n## Mermaid\n\`\`\`mermaid\n${mermaid}\n\`\`\``,
+                    },
+                ],
+            };
+        }
+
+        const { models, sourceUsed, status } = await this.getSchemaContext().resolveModels(source);
+        const graph = buildRelationGraphFromModels(models);
+        const reminder = formatUserPublishReminder(status);
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text:
+                        `Relation graph (source: ${sourceUsed}, built from schema preview).\n\n` +
+                        JSON.stringify(graph, null, 2) +
+                        reminder,
+                },
+            ],
         };
     }
 
@@ -970,21 +1418,111 @@ For nested fields (objects/arrays), set parent_field and is_object_field appropr
         return name.charAt(0).toLowerCase() + name.slice(1);
     }
 
+    /** Markdown: object vs repeated vs relation; GraphQL selections vs payloads (evolve this over time). */
+    private getFieldDesignGuideContent(): string {
+        return `# Apito field design & GraphQL selection guide
+
+This document is the **source of truth** for how nested fields differ from **top-level model documents**. Improve it over time as schema edge cases appear.
+
+## Apito vocabulary: \`object\` vs \`repeated\` (schema / add_field)
+
+- **\`object\` + \`object\`**: one **nested object** (single JSON object) with subfields you define under it.
+- **\`repeated\` + \`repeated\`**: Apito’s name for a **structured array** — a list of rows, each row an object with its own subfields; rows typically get an **\`_id\`** for updates. When you want an “array field” in the sense of **array of objects**, create a **\`repeated\`** field first — that is the supported pattern.
+- **\`list\`** (e.g. \`dynamicList\`, \`dropdown\`, \`multiSelect\`) is for **scalar / choice lists**, not for defining a typed array of nested object shapes like line items.
+
+Do not assume a GraphQL or JSON type named “array”; match Apito’s **\`object\`** vs **\`repeated\`** in \`get_model_schema\` / \`add_field\`.
+
+## 1) Top-level model document (each list row, get-by-id, upsert response)
+
+For a normal Apito **model** record, user-defined scalars and “flat” fields live under the **\`data { … }\`** selection alongside **\`id\`** / **\`_id\`** and **\`meta { … }\`** (exact field names match your public schema).
+
+**Wrong (root):** \`foodOrderList { id order_no date }\` — user fields on the document root  
+**Right (root):** \`foodOrderList { id data { order_no date } meta { created_at } }\`
+
+## 2) Relation to another model (\`has_one\` / \`has_many\`)
+
+A relation points at **another Apito model**. That side behaves like **(1)** again: use the **document envelope** when you need full rows — typically **\`id\`**, **\`data { … }\`**, **\`meta\`**.
+
+**Right:** \`customer { id data { name phone } }\`  
+**Wrong:** \`customer { name phone }\` — only if your public API exposes a shortcut projection (prefer the envelope for portability).
+
+## 3) Object field (\`field_type: object\`, \`input_type: object\`)
+
+Stored **inside** the parent’s \`data\` as nested JSON. In GraphQL, select **only the object’s keys** — there is **no** inner \`id\` / \`data\` wrapper for that object.
+
+**Right:** \`settings { individual_maintenance_mode business_type }\`  
+**Wrong:** \`settings { id data { individual_maintenance_mode } }\`
+
+Same idea for structured scalars that require a sub-selection in your schema, e.g. \`logo { url }\`, \`address { full_address division }\`, \`bio { markdown }\`.
+
+## 4) Repeated — Apito’s **array of object** (\`field_type: repeated\`, \`input_type: repeated\`)
+
+Each array element is **not** a full Apito model document. Children are **direct fields** on the element. Apito usually assigns **\`_id\`** per row so updates can target one line — include **\`_id\`** in selections when you need stable row identity.
+
+**Right:**  
+\`foods { _id food_id size price quantity discount }\`  
+\`additional_costs { cause amount }\`  
+\`stocks { stock_id quantity amount }\`
+
+**Wrong:**  
+\`foods { id data { food_id size } }\` — treats each line like a root document (it is not).
+
+## 5) Object inside object, object inside repeated
+
+Compose with the same rules: **each nested object** uses **direct braces**, no nested \`data\`:
+
+\`outer { inner { a b } }\`, \`lines { _id qty item { sku } }\`
+
+## 6) Array inside array
+
+Allowed but **discouraged**. Shape-wise: inner list items still **do not** get an automatic \`data { }\` wrapper—follow the schema’s sub-selections. Prefer flattening or a child model + relation if the graph gets unwieldy.
+
+## 7) Payloads (\`createX\`, \`updateX\`, \`upsert_data\` \`payload\`)
+
+- **Top-level model**: put user field values in the shape your API expects (often mirroring \`data\` keys at the payload root for project GraphQL).
+- **Object / repeated**: use plain JSON nesting — **no** artificial \`data\` key **inside** each array element or object sub-tree unless your API explicitly requires it.
+
+## Quick reference
+
+| Concept | Apito schema (\`add_field\`) | GraphQL selection pattern |
+|---------|------------------------------|---------------------------|
+| Single nested object | \`object\` / \`object\` | \`obj { a b nested { x } }\` |
+| Array of structured rows | **\`repeated\` / \`repeated\`** (this is “the array”) | \`rows { _id? a b nested { x } }\` |
+| Model root row | (model) | \`id data { userFields } meta { … }\` |
+| Relation (other model) | connection | \`rel { id data { … } meta { … } }\` |
+
+## MCP tools
+
+- **\`get_model_schema\`**: identifiers, object/repeated nesting, connections.  
+- **\`get_field_design_guide\`** (this guide): selection & payload mental model.  
+- **\`get_project_query_guide\`** resource / **\`get_project_query_structure\`**: operation names and filters.
+
+When in doubt, compare to **\`get_model_schema\`**: **\`object\`** = one nested object; **\`repeated\`** = array of structured rows; **connection** → relation section **2**.
+`;
+    }
+
     private getProjectQueryGuideContent(): string {
         return `# Apito Project GraphQL Query Structure
 
 For each model (e.g. \`Task\`, \`DentalAssessment\`), Apito generates a fixed set of operations. **CamelCase matters.**
 
-## CRITICAL: Response Structure
+## System API vs public project GraphQL
 
-**User-defined fields are NEVER at the root.** They live under \`data\`.
+This guide describes the **public** project GraphQL shape (\`taskList\`, \`createTask\`, etc.) for apps and integrations that call the project endpoint. **apito-mcp** itself uses the **system** GraphQL API (with \`X-Apito-Key\`) for schema and \`getModelData\`—not the public endpoint. Public queries may differ in authentication, multi-tenant context, and how nested relations are batched; if something matches here but fails on public, check tenant tokens and the public schema separately.
 
-Every document has: \`id\`, \`data { ... }\`, \`meta { ... }\`. Relations (has_one / has_many) return objects with the same shape.
+## CRITICAL: Root document envelope vs nested object / repeated fields
 
-**WRONG**: \`articleList { id title slug category { id name } }\` — user fields at root
-**RIGHT**: \`articleList { id data { title slug } meta { created_at } category { id data { name } } }\`
+**At the root of each model document** (each item in \`taskList\`, \`task(_id)\`, and each **relation** to another model), user-defined scalars belong under **\`data { … }\`** with **\`id\`**, **\`meta\`**, etc.
 
-Always wrap user fields in \`data { }\`. Relations: \`has_one\` = single object, \`has_many\` = list (e.g. \`taskList\`).
+**WRONG (root):** \`articleList { id title slug category { id name } }\` — user fields on the document root  
+**RIGHT (root):** \`articleList { id data { title slug } meta { created_at } category { id data { name } } }\`
+
+**Nested \`object\` and \`repeated\` (array-of-object) fields** live inside that \`data\`, but they are **not** second mini-documents: **do not** wrap their children in an inner \`id data { }\` unless you are intentionally selecting a **relation** to another model.
+
+- **Object field:** \`settings { mode type }\` — correct. \`settings { id data { mode } }\` — wrong.  
+- **Repeated field:** \`lines { _id qty amount }\` — correct (include \`_id\` when you need row identity). \`lines { id data { qty } }\` — wrong.
+
+Full rules, examples, and payload notes: MCP tool **\`get_field_design_guide\`** or resource **\`apito://field-design-guide\`**.
 
 **multiline fields** (content, bio, description, etc.) MUST have sub-selection: \`content { html }\` or \`bio { text }\` — pick \`html\`, \`text\`, or \`markdown\`. **geo fields** MUST have sub-selection: \`location { lat lon }\`. Selecting them bare causes "must have a sub selection" error.
 
@@ -1018,6 +1556,8 @@ Relations are **bidirectional** (has_one, has_many). Query related data by selec
 Use \`relation\` to filter by related model: \`taskList(relation: { category: { name: { eq: "urgent" } } })\`
 Use \`connection\` for connection metadata: \`connection_type\` (forward/backward), \`_id\`, \`to_model\`, \`relation_type\`
 
+**Schema link removal (MCP \`delete_relation\`):** one \`deleteConnectionFromModel\` call **drops the connection on both models** (forward and reverse). Pick either model as \`from_model\`, the peer as \`to_model\`, correct \`known_as\` — then **do not** delete again from the other model for the same edge.
+
 ## Pagination
 
 - \`page\`: 1-based page number
@@ -1037,7 +1577,9 @@ Use \`connection\` for connection metadata: \`connection_type\` (forward/backwar
 **Possible**: CRUD, filters by field type, OR/AND, pagination, sort, groupBy, relations (has_one, has_many), relation/connection filters, locale, draft/published.
 **Not**: Raw SQL, cross-model filters without relation, recursive graph traversal, full-text across all fields, schema changes via project API.
 
-Use the \`get_project_query_structure\` tool to get the mapping for your project models.`;
+Use the \`get_project_query_structure\` tool to get the mapping for your project models. For nested object/repeated field selection rules (avoid extra \`data\` wrappers on embedded object/repeated fields), call MCP tool \`get_field_design_guide\` or read resource \`apito://field-design-guide\`.
+
+**Schema versioning:** Public project GraphQL reflects **published (live)** schema only. MCP may stage draft models via system mutations; they appear in public API only after Console publish. See \`apito://schema-versioning-guide\`.`;
     }
 
     private async handleAddRelation(args: {
@@ -1055,13 +1597,118 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
             args.known_as
         );
 
+        const text = await this.formatStagingMutationResponse(
+            `add relation ${args.from_model} ↔ ${args.to_model}`,
+            connections
+        );
+
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Successfully created relation between "${args.from_model}" and "${args.to_model}".\n\nForward: ${args.from_model} ${args.forward_connection_type} ${args.to_model}\nReverse: ${args.to_model} ${args.reverse_connection_type} ${args.from_model}\n\nConnection details:\n${JSON.stringify(connections, null, 2)}`,
+                    text:
+                        `Relation between "${args.from_model}" and "${args.to_model}".\n\nForward: ${args.from_model} ${args.forward_connection_type} ${args.to_model}\nReverse: ${args.to_model} ${args.reverse_connection_type} ${args.from_model}\n\n` +
+                        text,
                 },
             ],
+        };
+    }
+
+    private async handleGetSchemaVersioningStatus() {
+        const status = await this.getSchemaContext().getStatus(true);
+        const reminder = formatUserPublishReminder(status);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(status, null, 2) + reminder,
+                },
+            ],
+        };
+    }
+
+    private async handleGetSchemaPreview(args: { source: string; version?: number }) {
+        const source = args.source as SchemaPreviewSource;
+        if (source !== 'live' && source !== 'draft' && source !== 'version') {
+            throw new Error('source must be live, draft, or version');
+        }
+        const models = await this.getSchemaContext().getPreview(source, args.version);
+        const status = await this.getSchemaContext().getStatus();
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text:
+                        `Schema preview (source: ${source}, ${models.length} model(s)):\n\n` +
+                        JSON.stringify({ models }, null, 2) +
+                        formatUserPublishReminder(status),
+                },
+            ],
+        };
+    }
+
+    private async handleGetEffectiveSchema() {
+        const summary = await this.getSchemaContext().getEffectiveSchemaSummary();
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(summary, null, 2),
+                },
+            ],
+        };
+    }
+
+    private async handleGetSchemaChangePlan(args: { changeset_id?: string } = {}) {
+        const status = await this.getSchemaContext().getStatus(true);
+        const changesetId = args.changeset_id || status.changeset_id;
+        const records = await this.getSchemaContext().getChangePlan(changesetId);
+        const reminder = formatUserPublishReminder(status);
+        const header =
+            `Publish plan (${records.length} record(s), changeset: ${changesetId ?? 'none'}). ` +
+            `Local/Remote columns are pending until the user publishes in Console → Schema Changes.\n\n`;
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: header + JSON.stringify(records, null, 2) + reminder,
+                },
+            ],
+        };
+    }
+
+    private async handleSummarizeSchemaDraftForReview() {
+        const summary = await this.getSchemaContext().getEffectiveSchemaSummary();
+        const status = summary.versioning as import('./types.js').SchemaVersioningStatus;
+        const records = await this.getSchemaContext().getChangePlan(status.changeset_id);
+
+        const draftOnly = (summary.draft_only_models as string[]) ?? [];
+        const effectiveModels = (summary.effective_models as import('./types.js').ApitoModel[]) ?? [];
+
+        let md = `# Schema draft summary\n\n`;
+        md += `- Versioning enabled: **${status.enabled}**\n`;
+        md += `- Active published version: **${status.active_version}**\n`;
+        md += `- Has draft: **${status.has_draft}**\n`;
+        if (status.changeset_id) {
+            md += `- Changeset: \`${status.changeset_id}\` (${status.pending_operations ?? 0} operation(s))\n`;
+        }
+        md += `\n## Effective models (${effectiveModels.length})\n\n`;
+        for (const m of effectiveModels) {
+            const draftTag = draftOnly.includes(m.name) ? ' *(draft-only — not published)*' : '';
+            md += `- **${m.name}**${draftTag}: ${m.fields?.length ?? 0} field(s), ${m.connections?.length ?? 0} connection(s)\n`;
+        }
+
+        md += `\n## Publish plan (${records.length} steps)\n\n`;
+        md += `| # | Action | Target | Impact | Status |\n|---|--------|--------|--------|--------|\n`;
+        for (const r of records) {
+            md += `| ${r.sequence ?? '-'} | ${r.action_key ?? '-'} | ${r.target_name ?? '-'} | ${r.impact ?? '-'} | ${r.status ?? r.local_status ?? '-'} |\n`;
+        }
+
+        md += formatUserPublishReminder(status);
+        md += `\n\nUse \`get_effective_schema\` for full JSON or \`get_schema_change_plan\` for detailed execution records.`;
+
+        return {
+            content: [{ type: 'text' as const, text: md }],
         };
     }
 
@@ -1074,6 +1721,8 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         connect?: Record<string, any>;
         disconnect?: Record<string, any>;
     }) {
+        await this.getSchemaContext().assertModelPublished(args.model_name);
+
         const doc = await this.client!.upsertModelData(args.model_name, args.payload, {
             _id: args._id,
             status: args.status,
@@ -1100,6 +1749,8 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         status?: string;
         search?: string;
     }) {
+        await this.getSchemaContext().assertModelPublished(args.model_name);
+
         const result = await this.client!.getModelData(args.model_name, {
             page: args.page,
             limit: args.limit,
@@ -1119,6 +1770,8 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
     }
 
     private async handleDeleteData(args: { model_name: string; _id: string }) {
+        await this.getSchemaContext().assertModelPublished(args.model_name);
+
         const deleted = await this.client!.deleteModelData(args.model_name, args._id);
 
         return {
@@ -1132,6 +1785,8 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
     }
 
     private async handleDuplicateData(args: { model_name: string; _id: string }) {
+        await this.getSchemaContext().assertModelPublished(args.model_name);
+
         const duplicated = await this.client!.duplicateModelData(args.model_name, args._id);
 
         return {
@@ -1144,31 +1799,79 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         };
     }
 
-    private async handleGetModelSchema(args: { model_name: string }) {
-        const models = await this.client!.getProjectModelsInfo(args.model_name);
+    private async handleGetModelSchema(args: { model_name: string; source?: string }) {
+        const source = await this.resolveSchemaSource(args.source);
+        const { models, status, sourceUsed } = await this.getSchemaContext().resolveModels(source);
+        const model = models.find((m) => m.name.toLowerCase() === args.model_name.toLowerCase());
 
-        if (models.length === 0) {
+        if (!model) {
+            const hint =
+                status.enabled && status.has_draft
+                    ? ' Try source=effective or get_effective_schema — the model may exist only in the draft.'
+                    : '';
             return {
                 content: [
                     {
                         type: 'text',
-                        text: `Model "${args.model_name}" not found.`,
+                        text: `Model "${args.model_name}" not found (source: ${sourceUsed}).${hint}`,
                     },
                 ],
                 isError: true,
             };
         }
 
-        const model = models[0];
-
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Schema for model "${args.model_name}":\n\n${JSON.stringify(model, null, 2)}`,
+                    text:
+                        `Schema for model "${args.model_name}" (source: ${sourceUsed}):\n\n` +
+                        JSON.stringify(model, null, 2) +
+                        formatUserPublishReminder(status),
                 },
             ],
         };
+    }
+
+    private getSchemaVersioningGuideContent(): string {
+        return `# Apito schema versioning (MCP guide)
+
+Pro Apito projects use **schema versioning**: system GraphQL mutations **stage** changes into a draft changeset. **Nothing is published automatically.**
+
+## Workflow
+
+1. Call \`get_schema_versioning_status\` at the start of schema work.
+2. Use \`create_model\`, \`add_field\`, \`add_relation\`, etc. — these stage draft operations on pro engines.
+3. Verify with \`get_effective_schema\` or \`get_schema_preview(source: "draft")\`.
+4. Review the publish plan with \`get_schema_change_plan\`.
+5. End sessions with \`summarize_schema_draft_for_review\`.
+6. **User** opens Apito Console → Project Settings → **Schema Changes** → reviews timeline → **Publish manually**.
+
+**MCP never publishes.** It does not call \`approveSchemaChanges\` or similar mutations.
+
+## Live vs draft vs effective
+
+| Source | Meaning |
+|--------|---------|
+| **live** | Published schema — what public GraphQL and physical tables use today |
+| **draft** | Staged changeset only (not yet published) |
+| **effective** | Merged live + draft (console overlay parity) — use to verify MCP work |
+
+Tools \`list_models\`, \`get_model_schema\`, and \`get_relation_graph\` accept optional \`source\`. Default: **effective** when a draft exists, else **live**.
+
+## Data tools
+
+\`upsert_data\`, \`get_data\`, \`delete_data\`, and \`duplicate_data\` require the model to exist in **live (published)** schema. Draft-only models are blocked with an error until publish.
+
+## Publish plan columns
+
+\`get_schema_change_plan\` returns \`schemaChangeExecutionRecords\`. **Local/Remote** statuses are pending until the user publishes in Console. After publish, remote may reflect backup/sync (Litestream), not live schema mutation.
+
+## Environment
+
+- \`TENANT_ID\` / \`APITO_TENANT_ID\` — sent as \`X-Apito-Tenant-ID\` for SaaS per-tenant DB scope
+- \`APITO_MCP_TEMP_TENANT_COOKIE=true\` — also sends \`temp_tenant_id\` cookie when needed
+`;
     }
 
     private validateModelName(name: string) {
@@ -1200,7 +1903,12 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
 declare const process: any;
 declare const console: any;
 
-if (typeof process !== 'undefined' && process.argv) {
+const isDirectRun =
+    typeof process !== 'undefined' &&
+    process.argv?.[1] &&
+    import.meta.url === new URL(process.argv[1], 'file:').href;
+
+if (isDirectRun) {
     // Default to system GraphQL endpoint for system queries like projectModelsInfo
     let endpoint = process.env.APITO_GRAPHQL_ENDPOINT || 'https://api.apito.io/system/graphql';
 
@@ -1219,6 +1927,13 @@ if (typeof process !== 'undefined' && process.argv) {
     // Log initialization (to stderr)
     console.error('[Apito MCP] Starting server...');
     console.error(`[Apito MCP] Endpoint: ${endpoint}`);
+    const tid = process.env.TENANT_ID || process.env.APITO_TENANT_ID;
+    if (tid) {
+        console.error(`[Apito MCP] TENANT_ID / APITO_TENANT_ID set (X-Apito-Tenant-ID will be sent)`);
+    }
+    if (process.env.APITO_MCP_TEMP_TENANT_COOKIE === 'true') {
+        console.error('[Apito MCP] APITO_MCP_TEMP_TENANT_COOKIE=true (also sending temp_tenant_id cookie)');
+    }
 
     const server = new ApitoMCPServer(endpoint, token);
     server.run().catch((err: any) => console.error('[Apito MCP] Fatal error:', err));
