@@ -8,7 +8,7 @@ import {
     ListResourcesRequestSchema,
     ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { ApitoGraphQLClient, type ApitoGraphQLClientOptions } from './graphql-client.js';
+import { ApitoGraphQLClient, type ApitoGraphQLClientOptions, type GraphQLRequestOptions } from './graphql-client.js';
 import {
     SchemaVersioningContext,
     detectStagingResponse,
@@ -16,9 +16,14 @@ import {
     buildRelationGraphFromModels,
     type SchemaSource,
 } from './schema-versioning.js';
+import { getSchemaMigrationGuideContent } from './schema-migration-guide.js';
 import { SchemaParser } from './schema-parser.js';
 import { FieldResolver } from './field-resolver.js';
-import type { ParsedField, ValidationInput, SchemaPreviewSource } from './types.js';
+import type { ParsedField, ValidationInput, SchemaPreviewSource, ApitoModel } from './types.js';
+import { filterToolsByEdition } from './mcp-edition.js';
+import { PLATFORM_TOOL_DEFINITIONS } from './platform-tools.js';
+import { handlePlatformTool, PLATFORM_TOOL_NAMES } from './platform-handlers.js';
+import { getSaasAuthGuideContent } from './guides/saas-auth-guide.js';
 
 const SOURCE_PARAM_SCHEMA = {
     type: 'string',
@@ -238,25 +243,39 @@ export class ApitoMCPServer {
         }
     }
 
+    private tenantReqOpts(tenantId?: string): GraphQLRequestOptions | undefined {
+        const tid = tenantId?.trim();
+        return tid ? { tenantId: tid } : undefined;
+    }
+
     private setupHandlers() {
+        const platformTools = filterToolsByEdition(PLATFORM_TOOL_DEFINITIONS).map(
+            ({ proOnly: _p, ...tool }) => tool
+        );
+
         // List available tools
         this.listToolsHandler = async () => ({
             tools: [
                 {
                     name: 'create_model',
                     description:
-                        'Create a new model. On pro engines with schema versioning, this **stages** a draft (not published). Verify with get_effective_schema; user must publish in Console → Schema Changes before data tools work.',
+                        'Create a new model. On pro engines with schema versioning, this **stages** a draft (not published). Verify with get_effective_schema; user must publish in Console → Schema Changes before data tools work. **SaaS:** For project-wide data shared by all tenants (no tenant isolation), set `is_common_model: true` — see `get_saas_model_guide` or resource `apito://saas-model-guide`. Default (omit or false) = tenant-scoped model.',
                     inputSchema: {
                         type: 'object',
                         properties: {
                             model_name: {
                                 type: 'string',
-                                description: 'Name of the model to create (e.g., "dentalAssessment", "patient")',
+                                description: 'Name of the model to create (e.g., "dentalAssessment", "patient", "app_release_policy")',
                             },
                             single_record: {
                                 type: 'boolean',
                                 description: 'Whether this model should store only a single record (like settings)',
                                 default: false,
+                            },
+                            is_common_model: {
+                                type: 'boolean',
+                                description:
+                                    'SaaS only: when true, this is a **common (project-wide) model** — not tied to any tenant, no tenant_id scoping, all tenants read/write the same rows. Use for shared catalogs, release policies, global reference data. When false/omitted, model is tenant-scoped (each tenant sees only their rows). Call get_saas_model_guide before using.',
                             },
                         },
                         required: ['model_name'],
@@ -283,7 +302,7 @@ Valid combinations:
 - Object (single nested object): field_type="object", input_type="object" (set is_object_field=true)
 - Repeated (array of objects / structured array): field_type="repeated", input_type="repeated" (set is_object_field=true; add child fields after)
 
-For nested subfields, set parent_field and is_object_field appropriately. For GraphQL selection shapes, call get_field_design_guide.`,
+For nested subfields, set parent_field (immediate parent only) and is_object_field appropriately. **add_field checks live published schema** — duplicate error means field already exists (skip or use is_update). See get_schema_migration_guide. For GraphQL selection shapes, call get_field_design_guide.`,
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -421,7 +440,7 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                 {
                     name: 'delete_field',
                     description:
-                        'Delete a normal (non-relation) field, or a model connection if you set is_relation=true (calls system deleteConnectionFromModel). Prefer delete_relation for removing links. **One call removes the connection on both models** (bidirectional); do not delete again from the peer model. For is_relation: model_name = either endpoint; field_name = connections[].model from get_model_schema(model_name), NOT a document field identifier.',
+                        'Delete a normal (non-relation) field, or a model connection if you set is_relation=true (calls system deleteConnectionFromModel). **Nested fields require parent_field** (immediate parent identifier). Stages remove_field — live schema unchanged until publish. See get_schema_migration_guide before delete+re-add. Prefer delete_relation for removing links. **One call removes the connection on both models** (bidirectional); do not delete again from the peer model. For is_relation: model_name = either endpoint; field_name = connections[].model from get_model_schema(model_name), NOT a document field identifier.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -453,6 +472,30 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                     },
                 },
                 {
+                    name: 'update_model',
+                    description:
+                        'Update model metadata (not fields). Use `is_common_model` to mark an existing model as project-wide (common) or tenant-scoped on SaaS projects. Metadata-only `is_common_model` updates apply immediately on pro engines (no schema publish required). Also supports `single_page_model`. At least one of is_common_model or single_page_model must be provided.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Canonical model name to update',
+                            },
+                            is_common_model: {
+                                type: 'boolean',
+                                description:
+                                    'SaaS: true = common/project-wide model (all tenants share rows, no tenant_id). false = tenant-scoped (default SaaS behavior). See get_saas_model_guide.',
+                            },
+                            single_page_model: {
+                                type: 'boolean',
+                                description: 'Whether the model stores a single record (settings-style)',
+                            },
+                        },
+                        required: ['model_name'],
+                    },
+                },
+                {
                     name: 'delete_model',
                     description:
                         '**DANGER — IRREVERSIBLE.** Removes the model from the project **schema** and deletes **all** documents in that model. **Hard requirement:** the engine refuses if this model still has schema edges — inspect `get_model_schema(model_name).connections` (must be empty) **and** every other model via `get_model_schema` so no `connections[].model` equals this model; remove each edge with `delete_relation` first (once per edge). Uses system `updateModel(type: delete, model_name)`. **WARNING 1:** You cannot undo this from the MCP. **WARNING 2:** Call only after explicit human confirmation. **Required:** `acknowledge_permanent_deletion` must be `true` or the tool refuses without calling the API.',
@@ -473,9 +516,18 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                     },
                 },
                 {
+                    name: 'get_schema_migration_guide',
+                    description:
+                        '**Read first for any schema migration** (JSON export, live preview, gap diff, or greenfield). Dos and donts: sequential mutations, live vs draft, nested parent_field, delete_field pitfalls, add_field duplicate errors, verification with get_schema_preview, SaaS patterns, publish handoff. Same content as resource apito://schema-migration-guide.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
                     name: 'get_schema_versioning_status',
                     description:
-                        'Check whether pro schema versioning is enabled and if a draft changeset exists. Call this at the start of any schema-building session. MCP stages mutations but never publishes — user must publish in Console → Schema Changes.',
+                        'Check whether pro schema versioning is enabled and if a draft changeset exists. Call after get_schema_migration_guide at the start of schema work. MCP stages mutations but never publishes — user must publish in Console → Schema Changes.',
                     inputSchema: {
                         type: 'object',
                         properties: {},
@@ -536,7 +588,7 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                 {
                     name: 'list_models',
                     description:
-                        'List models in the project. On pro engines with an active draft, defaults to effective (live+draft merge). Use source=live for published-only.',
+                        'List models in the project with scope labels (common / tenant-scoped / tenant catalogue). On pro engines with an active draft, defaults to effective (live+draft merge). Use source=live for published-only.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -547,7 +599,7 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                 {
                     name: 'get_model_schema',
                     description:
-                        'Get fields and connections for a model. Defaults to effective schema when a draft exists. Staged models/fields are visible with source=effective or draft. To remove a schema connection: use delete_relation **once** (both models updated automatically). Read connections[].model and known_as from get_model_schema. Do not guess from document field names. For object/repeated GraphQL shapes, call get_field_design_guide.',
+                        'Get fields, connections, and is_common_model for a model. Defaults to effective schema when a draft exists. Staged models/fields are visible with source=effective or draft. To remove a schema connection: use delete_relation **once** (both models updated automatically). Read connections[].model and known_as from get_model_schema. Do not guess from document field names. For object/repeated GraphQL shapes, call get_field_design_guide.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -561,9 +613,18 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                     },
                 },
                 {
+                    name: 'get_saas_model_guide',
+                    description:
+                        'SaaS model classification guide: tenant-scoped vs common (project-wide) models, when to use each, examples (app release policy, hospital medicine catalog), and how is_common_model affects queries and inserts. Read this before create_model on SaaS projects.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {},
+                    },
+                },
+                {
                     name: 'get_project_context',
                     description:
-                        'Read current project metadata from system GraphQL (id, name, project_type, and Pro fields tenant_model_name / per_tenant_separate_database when available). Use before data-plane calls to know if tenant scoping is required; pair with TENANT_ID / X-Apito-Tenant-ID env in MCP config.',
+                        'Read current project metadata from system GraphQL (id, name, project_type, and Pro fields tenant_model_name / per_tenant_separate_database when available). Use before data-plane calls to know if tenant scoping is required; pair with TENANT_ID / X-Apito-Tenant-ID env in MCP config. On SaaS projects, also call get_saas_model_guide to choose common vs tenant-scoped models.',
                     inputSchema: {
                         type: 'object',
                         properties: {},
@@ -773,6 +834,7 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                         required: ['model_name', '_id'],
                     },
                 },
+                ...platformTools,
             ],
         });
         this.server.setRequestHandler(ListToolsRequestSchema, this.listToolsHandler);
@@ -784,9 +846,19 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
             const { name, arguments: args } = request.params;
 
             try {
+                if (PLATFORM_TOOL_NAMES.has(name)) {
+                    return await handlePlatformTool(
+                        name,
+                        (args ?? {}) as Record<string, unknown>,
+                        this.client!
+                    );
+                }
+
                 switch (name) {
                     case 'summarize_schema_draft_for_review':
                         return await this.handleSummarizeSchemaDraftForReview();
+                    case 'get_schema_migration_guide':
+                        return await this.handleGetSchemaMigrationGuide();
                     case 'get_schema_versioning_status':
                         return await this.handleGetSchemaVersioningStatus();
                     case 'get_schema_preview':
@@ -807,12 +879,16 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                         return await this.handleDeleteField(args as any);
                     case 'delete_model':
                         return await this.handleDeleteModel(args as any);
+                    case 'update_model':
+                        return await this.handleUpdateModel(args as any);
                     case 'list_models':
                         return await this.handleListModels(args as any);
                     case 'get_model_schema':
                         return await this.handleGetModelSchema(args as any);
                     case 'get_project_context':
                         return await this.handleGetProjectContext();
+                    case 'get_saas_model_guide':
+                        return await this.handleGetSaaSModelGuide();
                     case 'get_relation_graph':
                         return await this.handleGetRelationGraph(args as any);
                     case 'get_project_query_structure':
@@ -909,6 +985,13 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
 
                 const resources: { uri: string; name: string; description: string; mimeType: string }[] = [
                     {
+                        uri: 'apito://schema-migration-guide',
+                        name: 'Apito schema migration guide',
+                        description:
+                            'Migration dos/donts: sequential ops, live vs draft, nested parent_field, delete/add pitfalls, verification, SaaS patterns — any source',
+                        mimeType: 'text/markdown',
+                    },
+                    {
                         uri: 'apito://schema-versioning-guide',
                         name: 'Apito schema versioning guide',
                         description: 'Draft vs live schema, verification tools, MCP never publishes, data after publish',
@@ -921,10 +1004,24 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                         mimeType: 'text/markdown',
                     },
                     {
+                        uri: 'apito://saas-model-guide',
+                        name: 'Apito SaaS model classification guide',
+                        description:
+                            'Common vs tenant-scoped models, is_common_model usage, examples (release policy, hospital medicine catalog)',
+                        mimeType: 'text/markdown',
+                    },
+                    {
                         uri: 'apito://field-design-guide',
                         name: 'Apito field design & GraphQL selection guide',
                         description:
                             'object vs repeated vs relation; when id/data applies; _id on array rows; no inner data node on nested fields',
+                        mimeType: 'text/markdown',
+                    },
+                    {
+                        uri: 'apito://saas-auth-guide',
+                        name: 'Apito SaaS app user authentication guide',
+                        description:
+                            'Local login, Google OAuth flow, tenant_id routing, token sensitivity for MCP auth tools',
                         mimeType: 'text/markdown',
                     },
                     ...models.map(model => ({
@@ -949,6 +1046,19 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
             this.ensureClient();
 
             const { uri } = request.params;
+
+            if (uri === 'apito://schema-migration-guide') {
+                const guide = getSchemaMigrationGuideContent();
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: guide,
+                        },
+                    ],
+                };
+            }
 
             // Static resource: apito://project-query-guide
             if (uri === 'apito://schema-versioning-guide') {
@@ -977,6 +1087,19 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                 };
             }
 
+            if (uri === 'apito://saas-model-guide') {
+                const guide = this.getSaaSModelClassificationGuideContent();
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: guide,
+                        },
+                    ],
+                };
+            }
+
             if (uri === 'apito://field-design-guide') {
                 const guide = this.getFieldDesignGuideContent();
                 return {
@@ -990,11 +1113,23 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                 };
             }
 
+            if (uri === 'apito://saas-auth-guide') {
+                return {
+                    contents: [
+                        {
+                            uri,
+                            mimeType: 'text/markdown',
+                            text: getSaasAuthGuideContent(),
+                        },
+                    ],
+                };
+            }
+
             // Parse URI: apito://model/{modelName}
             const match = uri.match(/^apito:\/\/model\/(.+)$/);
             if (!match) {
                 throw new Error(
-                    `Invalid resource URI: ${uri}. Expected format: apito://model/{modelName}, apito://project-query-guide, apito://field-design-guide, or apito://schema-versioning-guide`
+                    `Invalid resource URI: ${uri}. Expected format: apito://model/{modelName}, apito://schema-migration-guide, apito://project-query-guide, apito://field-design-guide, or apito://schema-versioning-guide`
                 );
             }
 
@@ -1025,18 +1160,31 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
         this.server.setRequestHandler(ReadResourceRequestSchema, this.readResourceHandler);
     }
 
-    private async handleCreateModel(args: { model_name: string; single_record?: boolean }) {
+    private async handleCreateModel(args: {
+        model_name: string;
+        single_record?: boolean;
+        is_common_model?: boolean;
+    }) {
         this.validateModelName(args.model_name);
 
         const rawResult = await this.client!.addModelToProject(
             args.model_name,
-            args.single_record
+            args.single_record,
+            args.is_common_model
         );
 
-        const text = await this.formatStagingMutationResponse(
-            `create model "${args.model_name}"`,
-            rawResult
-        );
+        const scopeNote =
+            args.is_common_model === true
+                ? '\n\n**Common model** — project-wide, no tenant scoping. All tenants share this data.'
+                : args.is_common_model === false
+                  ? '\n\n**Tenant-scoped model** — each tenant sees only their own rows.'
+                  : '';
+
+        const text =
+            (await this.formatStagingMutationResponse(
+                `create model "${args.model_name}"`,
+                rawResult
+            )) + scopeNote;
 
         return {
             content: [
@@ -1045,6 +1193,40 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                     text,
                 },
             ],
+        };
+    }
+
+    private async handleUpdateModel(args: {
+        model_name: string;
+        is_common_model?: boolean;
+        single_page_model?: boolean;
+    }) {
+        if (args.is_common_model === undefined && args.single_page_model === undefined) {
+            throw new Error(
+                'update_model requires at least one of is_common_model or single_page_model'
+            );
+        }
+
+        const model = await this.client!.updateModel('update', args.model_name, {
+            isCommonModel: args.is_common_model,
+            singlePageModel: args.single_page_model,
+        });
+
+        const scopeNote =
+            args.is_common_model === true
+                ? '\n\nModel is now **common (project-wide)** — all tenants share rows; no tenant_id scoping.'
+                : args.is_common_model === false
+                  ? '\n\nModel is now **tenant-scoped** — each tenant sees only their own rows.'
+                  : '';
+
+        const text =
+            (await this.formatStagingMutationResponse(
+                `update model "${args.model_name}" metadata`,
+                model
+            )) + scopeNote;
+
+        return {
+            content: [{ type: 'text', text }],
         };
     }
 
@@ -1305,10 +1487,31 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
         };
     }
 
+    private formatModelScopeLabel(model: ApitoModel, tenantModelName?: string): string {
+        if (model.is_common_model) {
+            return 'common (project-wide)';
+        }
+        if (
+            tenantModelName &&
+            model.name.toLowerCase() === tenantModelName.trim().toLowerCase()
+        ) {
+            return 'tenant catalogue';
+        }
+        return 'tenant-scoped';
+    }
+
     private async handleListModels(args: { source?: string } = {}) {
         const source = await this.resolveSchemaSource(args.source);
         const { models, status, sourceUsed } = await this.getSchemaContext().resolveModels(source);
         const reminder = formatUserPublishReminder(status);
+        let tenantModelName: string | undefined;
+        try {
+            const ctx = await this.client!.getProjectContextForMCP();
+            tenantModelName =
+                typeof ctx.tenant_model_name === 'string' ? ctx.tenant_model_name : undefined;
+        } catch {
+            tenantModelName = undefined;
+        }
 
         return {
             content: [
@@ -1316,7 +1519,13 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                     type: 'text',
                     text:
                         `Found ${models.length} model(s) (source: ${sourceUsed}):\n\n` +
-                        models.map((m) => `- ${m.name} (${m.fields?.length || 0} fields)`).join('\n') +
+                        models
+                            .map(
+                                (m) =>
+                                    `- ${m.name} (${m.fields?.length || 0} fields, ${this.formatModelScopeLabel(m, tenantModelName)})`
+                            )
+                            .join('\n') +
+                        '\n\nScope legend: **common** = all tenants share rows; **tenant-scoped** = each tenant sees only their data; **tenant catalogue** = tenant registry table.' +
                         reminder,
                 },
             ],
@@ -1368,13 +1577,32 @@ For nested subfields, set parent_field and is_object_field appropriately. For Gr
                 ? `\n\nMCP is sending tenant context (X-Apito-Tenant-ID${opts.sendTempTenantCookie ? ' + temp_tenant_id cookie' : ''}) from env.`
                 : '\n\nNo TENANT_ID / APITO_TENANT_ID in env — for SaaS per-tenant DB, set tenant on the MCP process.';
 
+        const saasHint =
+            ctx.project_type === 'saas'
+                ? '\n\n**SaaS project** — call `get_saas_model_guide` (or read `apito://saas-model-guide`) before `create_model` to decide whether a model should be **common (project-wide)** or **tenant-scoped**.'
+                : '';
+        const migrationHint =
+            '\n\n**Schema migration** — call `get_schema_migration_guide` (or read `apito://schema-migration-guide`) before any bulk schema build or migration from JSON/preview/gap diff.';
+
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Current project (system GraphQL):\n\n${JSON.stringify(ctx, null, 2)}${tenantHint}`,
+                    text: `Current project (system GraphQL):\n\n${JSON.stringify(ctx, null, 2)}${tenantHint}${saasHint}${migrationHint}`,
                 },
             ],
+        };
+    }
+
+    private async handleGetSaaSModelGuide() {
+        return {
+            content: [{ type: 'text' as const, text: this.getSaaSModelClassificationGuideContent() }],
+        };
+    }
+
+    private async handleGetSchemaMigrationGuide() {
+        return {
+            content: [{ type: 'text' as const, text: getSchemaMigrationGuideContent() }],
         };
     }
 
@@ -1720,16 +1948,22 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         local?: string;
         connect?: Record<string, any>;
         disconnect?: Record<string, any>;
+        tenant_id?: string;
     }) {
         await this.getSchemaContext().assertModelPublished(args.model_name);
 
-        const doc = await this.client!.upsertModelData(args.model_name, args.payload, {
-            _id: args._id,
-            status: args.status,
-            local: args.local,
-            connect: args.connect,
-            disconnect: args.disconnect,
-        });
+        const doc = await this.client!.upsertModelData(
+            args.model_name,
+            args.payload,
+            {
+                _id: args._id,
+                status: args.status,
+                local: args.local,
+                connect: args.connect,
+                disconnect: args.disconnect,
+            },
+            this.tenantReqOpts(args.tenant_id)
+        );
 
         return {
             content: [
@@ -1748,16 +1982,21 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         where?: Record<string, any>;
         status?: string;
         search?: string;
+        tenant_id?: string;
     }) {
         await this.getSchemaContext().assertModelPublished(args.model_name);
 
-        const result = await this.client!.getModelData(args.model_name, {
-            page: args.page,
-            limit: args.limit,
-            where: args.where,
-            status: args.status,
-            search: args.search,
-        });
+        const result = await this.client!.getModelData(
+            args.model_name,
+            {
+                page: args.page,
+                limit: args.limit,
+                where: args.where,
+                status: args.status,
+                search: args.search,
+            },
+            this.tenantReqOpts(args.tenant_id)
+        );
 
         return {
             content: [
@@ -1769,10 +2008,14 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         };
     }
 
-    private async handleDeleteData(args: { model_name: string; _id: string }) {
+    private async handleDeleteData(args: { model_name: string; _id: string; tenant_id?: string }) {
         await this.getSchemaContext().assertModelPublished(args.model_name);
 
-        const deleted = await this.client!.deleteModelData(args.model_name, args._id);
+        const deleted = await this.client!.deleteModelData(
+            args.model_name,
+            args._id,
+            this.tenantReqOpts(args.tenant_id)
+        );
 
         return {
             content: [
@@ -1784,10 +2027,14 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         };
     }
 
-    private async handleDuplicateData(args: { model_name: string; _id: string }) {
+    private async handleDuplicateData(args: { model_name: string; _id: string; tenant_id?: string }) {
         await this.getSchemaContext().assertModelPublished(args.model_name);
 
-        const duplicated = await this.client!.duplicateModelData(args.model_name, args._id);
+        const duplicated = await this.client!.duplicateModelData(
+            args.model_name,
+            args._id,
+            this.tenantReqOpts(args.tenant_id)
+        );
 
         return {
             content: [
@@ -1833,6 +2080,111 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         };
     }
 
+    private getSaaSModelClassificationGuideContent(): string {
+        return `# Apito SaaS model classification (common vs tenant-scoped)
+
+Use this guide on **SaaS projects** (\`project_type: "saas"\`) before calling \`create_model\`. Call \`get_project_context\` first to confirm project type and \`tenant_model_name\`.
+
+## Three model scopes
+
+| Scope | Flag | Who sees the data | tenant_id column |
+|-------|------|-------------------|------------------|
+| **Tenant-scoped** (default) | omit \`is_common_model\` or \`false\` | Each tenant only their own rows | Yes (shared DB) |
+| **Common (project-wide)** | \`is_common_model: true\` | **All tenants** read and write the **same** rows | No |
+| **Tenant catalogue** | (bootstrap only) | Registry of tenants — model name matches \`tenant_model_name\` on project | No |
+
+**Common models are not related to any tenant.** They do not get tenant filters on queries and do not stamp \`tenant_id\` on inserts. Every tenant in the project shares one dataset — like a global config table inside the app.
+
+## When to use \`is_common_model: true\`
+
+Use a **common model** when the data is **identical for all tenants** and **must not be isolated per tenant**:
+
+1. **App release policy** (\`app_release_policy\`) — minimum version, force-update rules, maintenance windows that apply to every tenant's app install.
+2. **Hospital management — medicine catalog** (\`medicine\`, \`drug_formulary\`) — shared drug reference list used by all hospital branches; **not** patient-specific prescriptions.
+3. **Global product/SKU catalog** — franchise-wide menu or inventory master when every location sells the same items.
+4. **Feature flags / global settings** — toggles that affect the whole product, not one customer.
+5. **Reference/lookup tables** — countries, ICD codes, tax brackets when all tenants share the same reference set.
+
+## When NOT to use common (keep tenant-scoped)
+
+Use the **default** (do **not** set \`is_common_model\`) when data belongs to **one tenant only**:
+
+- **Patients, appointments, orders, invoices** — Hospital A must never see Hospital B's records.
+- **User-generated content per customer** — posts, tickets, carts, subscriptions.
+- **Tenant-specific configuration** — branding, billing profile, local staff.
+
+If in doubt: *"Should tenant A ever see tenant B's rows?"* → **No** → tenant-scoped. **Yes, same rows for everyone** → common.
+
+## MCP tools
+
+### Create with the right scope
+
+\`\`\`
+create_model({
+  model_name: "app_release_policy",
+  is_common_model: true
+})
+\`\`\`
+
+\`\`\`
+create_model({
+  model_name: "patient"
+  // is_common_model omitted → tenant-scoped
+})
+\`\`\`
+
+### Fix an existing model
+
+If a model was created without the flag but should be project-wide:
+
+\`\`\`
+update_model({
+  model_name: "app_release_policy",
+  is_common_model: true
+})
+\`\`\`
+
+Metadata-only \`is_common_model\` updates apply **immediately** on pro engines (no schema publish required).
+
+### Inspect scope
+
+- \`list_models\` — shows \`common (project-wide)\`, \`tenant-scoped\`, or \`tenant catalogue\` per model.
+- \`get_model_schema\` — JSON includes \`is_common_model\` when available.
+
+## Shared database vs separate DB per tenant
+
+Check \`get_project_context\`:
+
+- \`per_tenant_separate_database: false\` (**shared DB**) — \`is_common_model\` is **critical**. Wrong scope causes SQL errors (\`no such column: tenant_id\`) or wrong isolation.
+- \`per_tenant_separate_database: true\` — each tenant has its own database; scope still affects filters and public API shape, but physical layout differs.
+
+## Tenant routing (separate from model scope)
+
+- **Model scope** (\`is_common_model\`) — *what data is shared vs isolated*.
+- **Request tenant** (\`TENANT_ID\` / \`X-Apito-Tenant-ID\`) — *which tenant context the current API call runs under* for tenant-scoped models and per-tenant DB routing.
+
+You still send tenant headers for SaaS data calls even when reading common models (the engine ignores tenant filter for common models).
+
+## Example: multi-tenant hospital SaaS
+
+| Model | Scope | Why |
+|-------|-------|-----|
+| \`tenant\` | tenant catalogue | Registry of hospital branches |
+| \`medicine\` | **common** | Shared drug formulary for all hospitals |
+| \`patient\` | tenant-scoped | Each hospital's patients |
+| \`appointment\` | tenant-scoped | Each hospital's schedule |
+| \`app_release_policy\` | **common** | Mobile app update rules for all installs |
+
+## Workflow checklist
+
+1. \`get_project_context\` — confirm SaaS + shared vs separate DB.
+2. Read this guide (or \`get_saas_model_guide\`).
+3. \`create_model\` with \`is_common_model: true\` only when data is truly global.
+4. \`list_models\` — verify scope labels after create.
+5. Publish schema in Console if versioning staged other changes.
+`;
+    }
+
     private getSchemaVersioningGuideContent(): string {
         return `# Apito schema versioning (MCP guide)
 
@@ -1840,7 +2192,8 @@ Pro Apito projects use **schema versioning**: system GraphQL mutations **stage**
 
 ## Workflow
 
-1. Call \`get_schema_versioning_status\` at the start of schema work.
+1. Call \`get_schema_migration_guide\` before bulk schema / migration work.
+2. Call \`get_schema_versioning_status\` at the start of schema work.
 2. Use \`create_model\`, \`add_field\`, \`add_relation\`, etc. — these stage draft operations on pro engines.
 3. Verify with \`get_effective_schema\` or \`get_schema_preview(source: "draft")\`.
 4. Review the publish plan with \`get_schema_change_plan\`.
@@ -1871,6 +2224,14 @@ Tools \`list_models\`, \`get_model_schema\`, and \`get_relation_graph\` accept o
 
 - \`TENANT_ID\` / \`APITO_TENANT_ID\` — sent as \`X-Apito-Tenant-ID\` for SaaS per-tenant DB scope
 - \`APITO_MCP_TEMP_TENANT_COOKIE=true\` — also sends \`temp_tenant_id\` cookie when needed
+
+## SaaS model scope
+
+On SaaS projects, call \`get_saas_model_guide\` or read \`apito://saas-model-guide\` before \`create_model\`. Use \`is_common_model: true\` for project-wide models (all tenants share rows); default is tenant-scoped.
+
+## Schema migration
+
+For migrations from any source (JSON export, another project, gap diff), call \`get_schema_migration_guide\` or read \`apito://schema-migration-guide\` first.
 `;
     }
 

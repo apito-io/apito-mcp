@@ -13,6 +13,7 @@ export type SchemaSource = 'live' | 'draft' | 'effective';
 type RawModel = {
   name?: string;
   single_page?: boolean;
+  is_common_model?: boolean;
   system_generated?: boolean;
   fields?: ApitoField[];
   connections?: ApitoConnection[];
@@ -59,6 +60,7 @@ function toApitoModel(raw: RawModel): ApitoModel {
     fields: raw.fields ?? [],
     connections: raw.connections ?? [],
     single_page: raw.single_page,
+    is_common_model: raw.is_common_model,
   };
 }
 

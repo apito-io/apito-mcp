@@ -1,6 +1,6 @@
 # Apito MCP Server
 
-**Version 1.1.0** — see [CHANGELOG.md](./CHANGELOG.md).
+**Version 1.3.0** — see [CHANGELOG.md](./CHANGELOG.md).
 
 A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API builder and headless CMS. This server enables LLMs like Claude to interact with Apito's system GraphQL API to create models, manage fields, and build schemas.
 
@@ -17,25 +17,157 @@ A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API bui
 - **Cloudflare Workers**: Deploy as a remote MCP server for use with any MCP client
 - **Project-Dependent API Keys**: API keys are passed per-request, allowing different projects to use the same worker
 - **Schema versioning (pro)**: Stage schema mutations into a draft; verify via `get_effective_schema`; user publishes in Console — MCP never publishes
+- **Platform management (v1.3)**: Full project administration beyond schema — tenant catalog, app end-users, auth testing, roles/settings/API keys, webhooks/plugins/functions/media, and extended data operations (~99% Console admin via system GraphQL)
+- **Edition split**: `APITO_MCP_EDITION=open` hides pro-only tools (tenant catalog, some schema versioning extras); default is `pro`
+
+## Platform management tools (v1.3)
+
+Prior to v1.3, MCP covered **schema design**, **draft versioning (read)**, and **model data CRUD** only. SaaS operators still had to open Console for tenants, app users, roles, webhooks, and similar admin tasks. v1.3 adds **~50 platform tools** that mirror Console system GraphQL — so an LLM agent can provision tenants, manage end-users, configure project settings, and run integration setup in one MCP session alongside schema work.
+
+All platform tools use the same transport as existing MCP tools: **system GraphQL** (`/system/graphql` + `X-Apito-Key`). They are **not** public `/secured/graphql` operations. Tool descriptions are tagged **`[pro]`**, **`[core]`**, or **`[core/pro]`** for a future open-mcp vs pro-mcp package split.
+
+### Tool catalog by domain
+
+| Domain | Tools | Engine GraphQL (representative) |
+|--------|-------|--------------------------------|
+| **SaaS tenants** `[pro]` | `list_tenants`, `create_tenant`, `update_tenant`, `delete_tenant`, `generate_tenant_token`, `search_tenant_by_domain` | `getTenants`, `createTenant`, `updateTenant`, `deleteTenant`, `generateTenantToken`, `searchTenantsByDomain` |
+| **App end-users** | `search_app_users`, `create_app_user`, `update_app_user`, `delete_app_user`, `reset_app_user_password`, `login_app_user`, `google_oauth_state`, `login_app_user_google` | `searchUsers`, `createUser`, `updateUser`, `deleteUser`, `resetUserPassword`, `loginUser`, `googleOAuthState` |
+| **Schema versioning extras** `[pro]` | `get_schema_diff`, `list_schema_versions`, `list_schema_change_events`, `discard_schema_draft` | `schemaDiff`, `schemaVersions`, `schemaChangeEvents`, `discardSchemaDraft` |
+| **Project admin** | `list_roles`, `get_permissions_catalog`, `upsert_role`, `duplicate_role`, `delete_role`, `get_project_settings`, `update_project_settings`, `list_api_keys`, `create_api_key`, `delete_api_key`, `get_auth_settings`, `update_auth_settings`, `get_storage_settings`, `update_storage_settings`, `list_team_members`, `update_team_members` | `currentProject`, `upsertRoleToProject`, `generateProjectToken`, `updateProjectAuthentication`, etc. |
+| **Integrations** | `list_webhooks`, `create_webhook`, `delete_webhook`, `list_plugins`, `configure_plugin`, `remove_plugin`, `list_functions`, `upsert_function`, `delete_function`, `list_media`, `upload_media_from_url`, `delete_media` | `createWebHook`, `upsertPlugin`, `upsertFunctionToProject`, `uploadImageFromURL`, etc. |
+| **Data plane** | `list_data`, `connect_relation`, `disconnect_relation`, `get_model_document_counts`, `list_document_revisions`, `reorder_fields` | `getModelData`, `upsertModelData` (connect/disconnect), `modelDocumentCounts`, `listDocumentRevisions`, `rearrangeSerialOfFieldType` |
+
+### Typical workflows
+
+**SaaS tenant onboarding** `[pro]`
+
+1. `list_tenants` — inspect catalog rows (id, name, domain, metadata).
+2. `create_tenant` — provision a tenant (`name`, optional `domain`, optional `data` JSON string). On per-tenant separate DB projects, engine provisions the tenant database.
+3. `generate_tenant_token` — mint a tenant-scoped API token (`tenant_id`, `duration` as `YYYY-MM-DD`, optional `role`). **Sensitive** — treat like a secret.
+4. `search_tenant_by_domain` — resolve tenant by hostname for login routing (`project_id`, `domain`).
+
+Pass **`tenant_id`** on subsequent data and app-user tools, or set `TENANT_ID` / `X-Apito-Tenant-ID` globally for the session.
+
+**App end-user administration**
+
+1. `search_app_users` with `project_id` (and `tenant_id` on SaaS) — paginated user list.
+2. `create_app_user` — requires `password` plus `email` and/or `phone`; optional `role`, `username`, `tenant_id`.
+3. `update_app_user` / `reset_app_user_password` / `delete_app_user` — lifecycle management by `user_id`.
+
+**Auth testing (local + Google)**
+
+Read **`apito://saas-auth-guide`** or call **`get_saas_auth_guide`** first.
+
+- **Local:** `login_app_user` with `project_id`, `password`, and email or phone → returns `{ token, user }`. Use `token` as Bearer on **public** `/secured/graphql` (not the MCP system API key).
+- **Google:** `google_oauth_state` → open OAuth URL in a browser → `login_app_user_google` with `code` + `state` (or `id_token`). MCP cannot complete OAuth without a human pasting the callback code.
+
+Returned JWTs and generated API tokens are **sensitive**. Do not log or commit them.
+
+**Project settings & access control**
+
+- **Roles:** `list_roles` → `get_permissions_catalog` → `upsert_role` (name, `api_permissions`, `logic_executions`, `is_admin`). Use `duplicate_role` / `delete_role` as needed.
+- **Settings:** `get_project_settings` / `update_project_settings` for name, description, and settings payload.
+- **API keys:** `list_api_keys` → `create_api_key` (returns token once) → `delete_api_key` to revoke.
+- **Auth & storage:** `get_auth_settings` / `update_auth_settings`, `get_storage_settings` / `update_storage_settings`.
+- **Console team:** `list_team_members` / `update_team_members` (add/remove operators on the project).
+
+**Integrations**
+
+- **Webhooks:** `list_webhooks` → `create_webhook` (events, model, url, name) → `delete_webhook`.
+- **Plugins:** `list_plugins` (by `type` enum, e.g. `STORAGE`, `FUNCTION`) → `configure_plugin` / `remove_plugin`.
+- **Functions:** `list_functions` → `upsert_function` → `delete_function`.
+- **Media:** `list_media` → `upload_media_from_url` → `delete_media` by ids.
+
+**Extended data operations**
+
+- `list_data` — same engine op as `get_data` but documented for filtering/pagination; supports `where`, `status`, `search`, `tenant_id`.
+- `connect_relation` / `disconnect_relation` — relation updates via `upsertModelData` connect/disconnect maps (use `get_relation_graph` for field names).
+- `get_model_document_counts` — row counts per model.
+- `list_document_revisions` — revision history for a document.
+- `reorder_fields` — change field serial order within a model.
+
+Existing data tools (`get_data`, `upsert_data`, `delete_data`, `duplicate_data`) now accept optional **`tenant_id`** per call in addition to env/header routing.
+
+### SaaS routing & edition
+
+**Tenant scope** — three equivalent ways to route a request to a tenant:
+
+| Method | Where |
+|--------|-------|
+| Tool argument `tenant_id` | Per-call override (preferred when switching tenants in one session) |
+| `TENANT_ID` / `APITO_TENANT_ID` | Stdio MCP client env |
+| `X-Apito-Tenant-ID` | Remote Cloudflare worker header |
+
+**Edition** — set `APITO_MCP_EDITION=open` to hide pro-only platform tools (`list_tenants`, `get_schema_diff`, `list_schema_versions`, `list_schema_change_events`, `discard_schema_draft`, `get_saas_auth_guide`). Default is **`pro`** (full surface). This prepares a future split into open-mcp vs pro-mcp packages without changing tool names today.
+
+### Resources & guides
+
+| Resource / tool | Purpose |
+|-----------------|---------|
+| `apito://saas-auth-guide` / `get_saas_auth_guide` | App user login flows, tenant rules, token handling |
+| `apito://saas-model-guide` / `get_saas_model_guide` | Common vs tenant-scoped models |
+| `apito://schema-versioning-guide` | Draft/publish workflow (MCP never publishes) |
+
+### Intentionally excluded
+
+MCP does **not** expose destructive or irreversible Console workflows that belong in human-reviewed UI:
+
+- Schema **publish** (`approveSchemaChanges`), **rollback** (`rollbackSchemaVersion`), **flush sync** (`flushSchemaSync`), execution repair mutations
+- `deleteProject`, billing/subscription ops, plugin **build** trigger
+
+MCP **stages** schema changes and **reads** drafts; operators **publish manually** in Console. `discard_schema_draft` is included as a safe undo for unstaged drafts only.
+
+### Smoke tests
+
+```bash
+pnpm test:tenant-users   # edition filtering + optional live tenant/user queries
+pnpm test:versioning     # schema versioning unit + optional live checks
+```
+
+Live tenant/user tests need `APITO_API_KEY`, `APITO_PROJECT_ID`, and optionally `TENANT_ID`.
 
 ## Schema versioning workflow (pro projects)
 
 When `PRO_SCHEMA_VERSIONING_ENABLED=true` on the engine, schema mutations **stage a draft** instead of applying immediately.
 
-1. Call **`get_schema_versioning_status`** at the start of schema work.
-2. Use **`create_model`**, **`add_field`**, **`add_relation`**, etc. — changes go to the draft changeset.
-3. Verify with **`get_effective_schema`** or **`get_schema_preview`** (`source: "draft"`).
-4. Review **`get_schema_change_plan`** for the publish timeline.
-5. End with **`summarize_schema_draft_for_review`** — tells the user to open **Console → Project Settings → Schema Changes → Publish manually**.
-6. **`upsert_data`** / **`get_data`** only work on **published (live)** models.
+1. Call **`get_schema_migration_guide`** (or read **`apito://schema-migration-guide`**) before any migration or bulk schema work.
+2. Call **`get_schema_versioning_status`** at the start of schema work.
+3. Use **`create_model`**, **`add_field`**, **`add_relation`**, etc. — changes go to the draft changeset.
+4. Verify with **`get_effective_schema`** or **`get_schema_preview`** (`source: "draft"`).
+5. Review **`get_schema_change_plan`** for the publish timeline.
+6. End with **`summarize_schema_draft_for_review`** — tells the user to open **Console → Project Settings → Schema Changes → Publish manually**.
+7. **`upsert_data`** / **`get_data`** only work on **published (live)** models.
 
-Read tools accept optional **`source`**: `live` | `draft` | `effective` (default: effective when a draft exists). Resource: **`apito://schema-versioning-guide`**.
+Read tools accept optional **`source`**: `live` | `draft` | `effective` (default: effective when a draft exists). Resources: **`apito://schema-migration-guide`**, **`apito://schema-versioning-guide`**.
 
 **MCP never calls publish mutations** (`approveSchemaChanges`, etc.).
 
+See **[SCHEMA_MIGRATION_GUIDE.md](./SCHEMA_MIGRATION_GUIDE.md)** for full migration dos/donts (nested fields, live vs draft, delete/add pitfalls).
+
 ### SaaS tenant headers
 
-For per-tenant database scope, set `TENANT_ID` or `APITO_TENANT_ID` in stdio env, or send **`X-Apito-Tenant-ID`** on remote worker requests (included in CORS allowlist).
+For per-tenant database scope, set `TENANT_ID` or `APITO_TENANT_ID` in stdio env, or send **`X-Apito-Tenant-ID`** on remote worker requests (included in CORS allowlist). Most platform and data tools also accept per-call **`tenant_id`** in tool arguments.
+
+Set **`APITO_MCP_EDITION=open`** to hide pro-only platform tools (tenant catalog, `get_schema_diff`, `list_schema_versions`, etc.). Default is **`pro`** (full surface).
+
+### SaaS model scope (common vs tenant-scoped)
+
+On **SaaS projects**, models can be:
+
+| Scope | MCP flag | Meaning |
+|-------|----------|---------|
+| **Tenant-scoped** (default) | omit `is_common_model` | Each tenant sees only their own rows |
+| **Common (project-wide)** | `is_common_model: true` | All tenants share the same rows — no tenant isolation |
+
+**Examples:** `app_release_policy` and a shared `medicine` catalog in hospital SaaS should be **common**. `patient`, `appointment`, and `order` should stay **tenant-scoped**.
+
+- Tool: **`get_saas_model_guide`** — full guide with examples and decision checklist
+- Resource: **`apito://saas-model-guide`**
+- **`create_model`** accepts `is_common_model`
+- **`update_model`** toggles `is_common_model` on existing models (metadata-only, immediate on pro)
+- **`list_models`** shows scope per model (`common`, `tenant-scoped`, `tenant catalogue`)
+
+Call **`get_project_context`** first on SaaS projects, then **`get_saas_model_guide`** before creating models.
 
 ### MCP Client Configuration (Cursor / mcp-remote)
 
@@ -76,6 +208,27 @@ Create a new model in Apito.
 
 - `model_name` (required): Name of the model
 - `single_record` (optional): Whether this is a single-record model
+- `is_common_model` (optional, SaaS): When `true`, creates a **project-wide common model** — all tenants share rows, no tenant scoping. See `get_saas_model_guide`.
+
+### `update_model`
+
+Update model metadata (not fields).
+
+**Arguments:**
+
+- `model_name` (required): Model to update
+- `is_common_model` (optional): Mark model as common (`true`) or tenant-scoped (`false`)
+- `single_page_model` (optional): Single-record settings model
+
+At least one of `is_common_model` or `single_page_model` is required.
+
+### `get_schema_migration_guide`
+
+Returns the full schema migration guide: dos/donts for any source (JSON export, live preview, gap diff). Covers sequential mutations, live vs draft, nested `parent_field`, delete/add pitfalls, verification with `get_schema_preview`, SaaS patterns, and publish handoff. **Call this before bulk schema work.** Same content as resource `apito://schema-migration-guide`. See also [SCHEMA_MIGRATION_GUIDE.md](./SCHEMA_MIGRATION_GUIDE.md).
+
+### `get_saas_model_guide`
+
+Returns the SaaS model classification guide: when to use common vs tenant-scoped models, with examples (`app_release_policy`, hospital `medicine` catalog). No arguments.
 
 ### `add_field`
 
@@ -639,27 +792,7 @@ Set environment variables in your MCP client configuration (see examples above).
 
 ### Testing the Connection
 
-You can test the MCP server connection using the MCP Inspector or by checking if tools are available in your client. The server should expose:
-
-- `get_schema_versioning_status`
-- `get_schema_preview`
-- `get_effective_schema`
-- `get_schema_change_plan`
-- `summarize_schema_draft_for_review`
-- `create_model`
-- `add_field`
-- `update_field`
-- `rename_field`
-- `delete_field`
-- `delete_model`
-- `list_models`
-- `get_model_schema`
-- `get_project_query_structure`
-- `add_relation`
-- `upsert_data`
-- `get_data`
-- `delete_data`
-- `duplicate_data`
+You can test the MCP server connection using the MCP Inspector or by checking if tools are available in your client. The server should expose schema tools (`create_model`, `add_field`, …), data tools (`get_data`, `upsert_data`, …), schema versioning read tools, and **platform tools** (`list_tenants`, `search_app_users`, `list_roles`, …). Run `pnpm test:tenant-users` for tenant/user smoke tests and `pnpm test:versioning` for schema versioning tests.
 
 ## License
 

@@ -21,6 +21,8 @@ export interface ModelDefinition {
     name: string;
     fields: ParsedField[];
     single_record?: boolean;
+    /** SaaS: project-wide model without tenant scoping (all tenants share rows). */
+    is_common_model?: boolean;
 }
 
 export interface GraphQLResponse<T = any> {
@@ -37,6 +39,8 @@ export interface ApitoModel {
     fields: ApitoField[];
     connections?: any[];
     single_page?: boolean;
+    /** SaaS: project-wide model — no tenant_id scoping; all tenants read/write shared rows. */
+    is_common_model?: boolean;
 }
 
 export interface ApitoField {
@@ -141,5 +145,56 @@ export interface StagingMutationMeta {
     staged: boolean;
     message?: string;
     modelName?: string;
+}
+
+export interface TenantListItem {
+    id: string;
+    name: string;
+    icon?: string;
+    data?: string;
+    domain?: string;
+    status?: string;
+}
+
+export interface AppUserItem {
+    id: string;
+    email?: string;
+    username?: string;
+    phone?: string;
+    role?: string;
+    provider?: string;
+    tenant_id?: string;
+    status?: string;
+    created_at?: string;
+    updated_at?: string;
+}
+
+export interface LoginAppUserPayload {
+    token: string;
+    user: AppUserItem;
+}
+
+export interface ProjectRole {
+    name?: string;
+    is_admin?: boolean;
+    api_permissions?: Record<string, unknown>;
+    logic_executions?: string[];
+    administrative_permissions?: string[];
+    system_generated?: boolean;
+}
+
+export interface SchemaVersionItem {
+    version: number;
+    published_at?: string;
+    published_by?: string;
+    message?: string;
+    changeset_id?: string;
+}
+
+export interface SchemaChangeEventItem {
+    event_type?: string;
+    actor_id?: string;
+    created_at?: string;
+    payload_json?: string;
 }
 

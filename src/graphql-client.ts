@@ -12,6 +12,11 @@ import type {
   SchemaChangeExecutionRecord,
 } from './types.js';
 
+/** Per-request overrides (e.g. tenant scope for a single tool call). */
+export type GraphQLRequestOptions = {
+  tenantId?: string;
+};
+
 /** Optional headers for SaaS / MCP (see engine pro_token_hook tenant resolution). */
 export type ApitoGraphQLClientOptions = {
   /** Sent as `X-Apito-Tenant-ID` (preferred for per-tenant DB routing). */
@@ -21,77 +26,103 @@ export type ApitoGraphQLClientOptions = {
 };
 
 export class ApitoGraphQLClient {
-  private client: GraphQLClient;
-  private endpoint: string;
+  private readonly endpoint: string;
+  private readonly authToken: string;
+  private readonly defaultOptions: ApitoGraphQLClientOptions;
 
   constructor(endpoint: string, token: string, options: ApitoGraphQLClientOptions = {}) {
     this.endpoint = endpoint;
+    this.authToken = token;
+    this.defaultOptions = options;
+  }
+
+  private buildHeaders(reqOpts?: GraphQLRequestOptions): Record<string, string> {
     const headers: Record<string, string> = {
-      'X-Apito-Key': token,
+      'X-Apito-Key': this.authToken,
       'Content-Type': 'application/json',
     };
-    const tid = options.tenantId?.trim();
+    const tid = (reqOpts?.tenantId ?? this.defaultOptions.tenantId)?.trim();
     if (tid) {
       headers['X-Apito-Tenant-ID'] = tid;
     }
-    if (options.sendTempTenantCookie && tid) {
+    const sendCookie =
+      this.defaultOptions.sendTempTenantCookie ||
+      (typeof process !== 'undefined' && process.env?.APITO_MCP_TEMP_TENANT_COOKIE === 'true');
+    if (sendCookie && tid) {
       headers['Cookie'] = `temp_tenant_id=${encodeURIComponent(tid)}`;
     }
-    this.client = new GraphQLClient(endpoint, {
-      headers,
-    });
+    return headers;
   }
 
-  private async execute<T = any>(
+  /** Execute GraphQL with optional per-request tenant override. */
+  async request<T = unknown>(
     query: string,
-    variables?: Record<string, any>
+    variables?: Record<string, unknown>,
+    reqOpts?: GraphQLRequestOptions
   ): Promise<T> {
+    const client = new GraphQLClient(this.endpoint, {
+      headers: this.buildHeaders(reqOpts),
+    });
     try {
-      const response = await this.client.request<any>(query, variables);
+      const response = await client.request<unknown>(query, variables);
 
-      // Check for GraphQL errors in response
-      if (response.errors && response.errors.length > 0) {
-        const errorMessages = response.errors.map((e: any) => {
-          const path = e.path ? ` (path: ${e.path.join('.')})` : '';
-          const code = e.extensions?.code ? ` [${e.extensions.code}]` : '';
-          return `${e.message}${code}${path}`;
-        }).join('; ');
-
+      if (
+        response &&
+        typeof response === 'object' &&
+        'errors' in response &&
+        Array.isArray((response as { errors?: unknown[] }).errors) &&
+        (response as { errors: unknown[] }).errors.length > 0
+      ) {
+        const errors = (response as { errors: Array<{ message?: string; path?: unknown[]; extensions?: { code?: string } }> }).errors;
+        const errorMessages = errors
+          .map((e) => {
+            const path = e.path ? ` (path: ${(e.path as string[]).join('.')})` : '';
+            const code = e.extensions?.code ? ` [${e.extensions.code}]` : '';
+            return `${e.message}${code}${path}`;
+          })
+          .join('; ');
         throw new Error(`GraphQL errors: ${errorMessages}`);
       }
 
-      // graphql-request returns data directly, not wrapped in { data: ... }
-      // So response IS the data
       return response as T;
-    } catch (error: any) {
-      // Enhanced error handling
-      if (error.response) {
-        const errors = error.response.errors || [];
-        const errorMessages = errors.map((e: any) => {
-          const path = e.path ? ` (path: ${e.path.join('.')})` : '';
-          const code = e.extensions?.code ? ` [${e.extensions.code}]` : '';
-          return `${e.message}${code}${path}`;
-        }).join('; ');
-
-        throw new Error(`GraphQL request failed: ${errorMessages || JSON.stringify(error.response)}`);
+    } catch (error: unknown) {
+      const err = error as { response?: { errors?: unknown[] }; message?: string };
+      if (err.response) {
+        const errors = err.response.errors || [];
+        const errorMessages = (errors as Array<{ message?: string; path?: unknown[]; extensions?: { code?: string } }>)
+          .map((e) => {
+            const path = e.path ? ` (path: ${(e.path as string[]).join('.')})` : '';
+            const code = e.extensions?.code ? ` [${e.extensions.code}]` : '';
+            return `${e.message}${code}${path}`;
+          })
+          .join('; ');
+        throw new Error(`GraphQL request failed: ${errorMessages || JSON.stringify(err.response)}`);
       }
-
-      // Network or other errors
-      if (error.message) {
-        throw new Error(`Request failed: ${error.message}`);
+      if (err.message) {
+        throw new Error(`Request failed: ${err.message}`);
       }
-
-      // Log full error for debugging
-      console.error('Full error object:', JSON.stringify(error, null, 2));
       throw new Error(`Request failed: ${JSON.stringify(error)}`);
     }
   }
 
-  async addModelToProject(name: string, singleRecord?: boolean): Promise<ApitoModel[]> {
+  private async execute<T = unknown>(
+    query: string,
+    variables?: Record<string, unknown>,
+    reqOpts?: GraphQLRequestOptions
+  ): Promise<T> {
+    return this.request<T>(query, variables, reqOpts);
+  }
+
+  async addModelToProject(
+    name: string,
+    singleRecord?: boolean,
+    isCommonModel?: boolean
+  ): Promise<ApitoModel[]> {
     const mutation = `
-      mutation AddModelToProject($name: String!, $single_record: Boolean) {
-        addModelToProject(name: $name, single_record: $single_record) {
+      mutation AddModelToProject($name: String!, $single_record: Boolean, $is_common_model: Boolean) {
+        addModelToProject(name: $name, single_record: $single_record, is_common_model: $is_common_model) {
           name
+          is_common_model
           fields {
             identifier
             label
@@ -103,9 +134,14 @@ export class ApitoGraphQLClient {
       }
     `;
 
+    const variables: Record<string, unknown> = { name, single_record: singleRecord };
+    if (isCommonModel !== undefined) {
+      variables.is_common_model = isCommonModel;
+    }
+
     const result = await this.execute<{ addModelToProject: ApitoModel[] }>(
       mutation,
-      { name, single_record: singleRecord }
+      variables
     );
 
     return result.addModelToProject;
@@ -194,6 +230,7 @@ export class ApitoGraphQLClient {
     options: {
       newName?: string;
       singlePageModel?: boolean;
+      isCommonModel?: boolean;
     } = {}
   ): Promise<ApitoModel> {
     const mutation = `
@@ -202,14 +239,17 @@ export class ApitoGraphQLClient {
         $model_name: String!
         $new_name: String
         $single_page_model: Boolean
+        $is_common_model: Boolean
       ) {
         updateModel(
           type: $type
           model_name: $model_name
           new_name: $new_name
           single_page_model: $single_page_model
+          is_common_model: $is_common_model
         ) {
           name
+          is_common_model
           fields {
             identifier
             label
@@ -228,6 +268,7 @@ export class ApitoGraphQLClient {
 
     if (options.newName) variables.new_name = options.newName;
     if (options.singlePageModel !== undefined) variables.single_page_model = options.singlePageModel;
+    if (options.isCommonModel !== undefined) variables.is_common_model = options.isCommonModel;
 
     const result = await this.execute<{ updateModel: ApitoModel }>(
       mutation,
@@ -392,6 +433,8 @@ export class ApitoGraphQLClient {
       query GetProjectModelsInfo($model_name: String) {
         projectModelsInfo(model_name: $model_name) {
           name
+          single_page
+          is_common_model
           fields {
             identifier
             label
@@ -514,7 +557,8 @@ export class ApitoGraphQLClient {
       local?: string;
       connect?: Record<string, any>;
       disconnect?: Record<string, any>;
-    } = {}
+    } = {},
+    reqOpts?: GraphQLRequestOptions
   ): Promise<ApitoDocument> {
     const status = options.status || 'published';
     const hasId = !!options._id;
@@ -569,7 +613,8 @@ export class ApitoGraphQLClient {
 
     const result = await this.execute<{ upsertModelData: ApitoDocument }>(
       mutation,
-      variables
+      variables,
+      reqOpts
     );
     return result.upsertModelData;
   }
@@ -582,7 +627,8 @@ export class ApitoGraphQLClient {
       where?: Record<string, any>;
       status?: string;
       search?: string;
-    } = {}
+    } = {},
+    reqOpts?: GraphQLRequestOptions
   ): Promise<GetModelDataResponse> {
     const query = `
       query GetModelData(
@@ -631,12 +677,17 @@ export class ApitoGraphQLClient {
 
     const result = await this.execute<{ getModelData: GetModelDataResponse }>(
       query,
-      variables
+      variables,
+      reqOpts
     );
     return result.getModelData;
   }
 
-  async deleteModelData(modelName: string, id: string): Promise<{ id: string }> {
+  async deleteModelData(
+    modelName: string,
+    id: string,
+    reqOpts?: GraphQLRequestOptions
+  ): Promise<{ id: string }> {
     const mutation = `
       mutation DeleteModelData($_id: String, $model_name: String!) {
         deleteModelData(_id: $_id, model_name: $model_name) {
@@ -647,7 +698,8 @@ export class ApitoGraphQLClient {
 
     const result = await this.execute<{ deleteModelData: { id: string } }>(
       mutation,
-      { _id: id, model_name: modelName }
+      { _id: id, model_name: modelName },
+      reqOpts
     );
     return result.deleteModelData;
   }
@@ -763,7 +815,11 @@ export class ApitoGraphQLClient {
     return result.schemaChangeExecutionRecords ?? [];
   }
 
-  async duplicateModelData(modelName: string, id: string): Promise<{ id: string }> {
+  async duplicateModelData(
+    modelName: string,
+    id: string,
+    reqOpts?: GraphQLRequestOptions
+  ): Promise<{ id: string }> {
     const mutation = `
       mutation DuplicateModelData($_id: String, $model_name: String!) {
         duplicateModelData(_id: $_id, model_name: $model_name) {
@@ -774,7 +830,8 @@ export class ApitoGraphQLClient {
 
     const result = await this.execute<{ duplicateModelData: { id: string } }>(
       mutation,
-      { _id: id, model_name: modelName }
+      { _id: id, model_name: modelName },
+      reqOpts
     );
     return result.duplicateModelData;
   }
