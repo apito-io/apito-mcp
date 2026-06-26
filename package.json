@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production",
+    "deploy:development": "wrangler deploy --env development",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test:versioning": "tsx test-schema-versioning.ts",
