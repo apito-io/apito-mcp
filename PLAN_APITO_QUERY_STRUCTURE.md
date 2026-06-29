@@ -198,7 +198,7 @@ taskList(_key: { in: ["key1", "key2"] })
 
 - Arbitrary SQL-like expressions
 - Full-text search across all fields (only `contains` on string fields)
-- Cross-model filters in a single `where` (use `relation` for that)
+- Cross-model filters in a single `where` (use **`relation`** on the list query instead — not `connection`)
 
 ---
 
@@ -249,28 +249,70 @@ query {
 }
 ```
 
-### Relation Filter (`relation`)
+### Relation filter (`relation`) — **default for filtering lists by related models**
 
-To filter a list by conditions on **related** models, use `relation`:
+Use **`relation`** when you need to filter a **list query** by conditions on a **linked model**. This is the normal pattern for **has_one**, **has_many**, and **many_to_many**.
+
+**Do not use `connection` for this** — see [Connection filter](#connection-filter-connection--advanced-only) below.
+
+Keys under `relation` are the **related model name** or **`known_as`** from `get_model_schema` → `connections[]`.
+
+Each relation key accepts:
+
+- **`_id`** — filter by related document id: `eq`, `ne`, `in`, `not_in`
+- **Related model scalar fields** — same operators as `where` on that model (e.g. `code: { eq: "C100" }`)
+
+#### Example: student has one class; class has many students
+
+Find all students in a specific class (by class id):
 
 ```graphql
-taskList(relation: {
-  category: { name: { eq: "urgent" } }
-})
+query MyQuery {
+  studentList(relation: { class: { _id: { eq: "01KW4M8K7WR57HB3G0DWN48CTZ" } } }) {
+    id
+    data {
+      name
+    }
+    class {
+      id
+      data {
+        name
+        code
+      }
+    }
+  }
+}
 ```
 
-This returns tasks whose related category has `name = "urgent"`. The keys under `relation` are the **related model names** (or `known_as`).
-
-### Connection Filter (`connection`)
-
-Use `connection` when you want to constrain the query by connection metadata:
-
-- `connection_type`: `forward` | `backward`
-- `_id`: ID of the document to start from
-- `to_model`: Target model (enum of connected models)
-- `relation_type`: `has_one` | `has_many`
+Same idea by a field on the related model:
 
 ```graphql
+studentList(relation: { class: { code: { eq: "C100" } } }) {
+  id
+  data { name }
+}
+```
+
+#### Relation geometry (how to think about it)
+
+| Schema shape | Example | `relation` filter on |
+|--------------|---------|----------------------|
+| **has_one** (FK on listed model) | Student → Class | `studentList(relation: { class: { … } })` |
+| **has_many** (FK on related model) | Class → Student (students point at class) | `classList(relation: { student: { … } })` or filter students from class side via nested list args |
+| **many_to_many** (pivot) | Tag ↔ Article | `articleList(relation: { tag: { _id: { eq: "…" } } })` |
+
+You can combine `relation` with `where`, `page`, `limit`, and `sort` on the same list query.
+
+---
+
+### Connection filter (`connection`) — **advanced only**
+
+Use **`connection`** only for a **specific graph-navigation case**: constrain a list starting from a **known anchor document** and explicit connection metadata (direction, target model, relation type). Typical uses include paginated relation APIs that mirror GraphQL connection semantics from a parent id.
+
+**For everyday filtering** (“students in this class”, “orders for this customer”, “articles with this tag”) — use **`relation`**, not `connection`.
+
+```graphql
+# Advanced — anchor document + connection metadata (NOT for simple “filter by related model”)
 taskList(connection: {
   _id: "author_id_here"
   connection_type: backward
@@ -279,18 +321,64 @@ taskList(connection: {
 })
 ```
 
-This returns tasks connected to the given author via the specified relation.
+| Arg | Purpose |
+|-----|---------|
+| `_id` | Anchor document id to start traversal from |
+| `connection_type` | `forward` \| `backward` |
+| `to_model` | Target model enum |
+| `relation_type` | `has_one` \| `has_many` |
+
+---
+
+### How to query related data in the selection set (not filters)
+
+**In a query selection**, you still load related records by field name (from `connections[].model` or `known_as`):
+
+- **has_one**: single nested object — e.g. `class { id data { name code } }`
+- **has_many**: nested list with its own list args — e.g. `studentList(where: { … }, page: 1, limit: 10) { id data { name } }`
+
+This is separate from **`relation`** (list filter) and **`connection`** (advanced list filter).
+
+### Example: Author ↔ Book
+
+If `Author` has many `Book` and `Book` has one `Author`:
+
+```graphql
+query {
+  authorList {
+    id
+    data { name }
+    profile { id data { … } }
+    bookList(where: { title: { contains: "API" } }, page: 1, limit: 10) {
+      id
+      data { title }
+    }
+  }
+}
+```
+
+From the other side (Book):
+
+```graphql
+query {
+  bookList {
+    id
+    data { title }
+    author { id data { name } }
+  }
+}
+```
 
 ### What Is Possible
 
 - Traverse relations in queries (nested selection)
-- Filter list by related model conditions (`relation`)
-- Filter by connection metadata (`connection`)
-- Paginate and sort on `has_many` lists
+- **Filter lists by related model** with **`relation`** (has_one, has_many, M:N) — preferred
+- Filter by connection metadata with **`connection`** — specialized cases only
+- Paginate and sort on `has_many` nested lists
 
 ### What Is NOT Possible
 
-- Many-to-many relations without an intermediate model
+- Using **`connection`** as a substitute for **`relation`** when you only need “rows whose related X matches …”
 - Arbitrary joins across unrelated models
 - Filtering by nested relation depth beyond one level in a single `relation` block
 
@@ -408,7 +496,7 @@ Count with same filters as list (no `page`/`limit`).
 - Sorting by any sortable field
 - Aggregation via `groupBy` on list queries
 - Querying relations (has_one, has_many) via nested selection
-- Filtering by related model (`relation`) or connection (`connection`)
+- Filtering by related model (**`relation`**) or connection metadata (**`connection`**, advanced only)
 - Locale-aware content (`local`)
 - Draft/published status (`status`: `all`, `draft`, `published`)
 - Direct key filtering (`_key`)

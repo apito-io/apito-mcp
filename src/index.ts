@@ -649,7 +649,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                 {
                     name: 'get_project_query_structure',
                     description:
-                        "Get the Apito project GraphQL query structure: which operations exist for each model. For model 'Task' you get task(_id), taskList, taskListCount, createTask, updateTask, deleteTask, upsertTaskList. CamelCase matters. For how to shape field selections (object vs repeated vs relation — avoid an extra `data` node inside nested fields), call get_field_design_guide or read apito://field-design-guide.",
+                        "Get the Apito project GraphQL query structure: which operations exist for each model. For model 'Task' you get task(_id), taskList, taskListCount, createTask, updateTask, deleteTask, upsertTaskList. CamelCase matters. To filter lists by related models (has_one, has_many, M:N), use the `relation` arg on *List — e.g. studentList(relation: { class: { _id: { eq: '…' } } }); do not use `connection` for that. Full rules: get_project_query_guide / apito://project-query-guide. For field selections (object vs repeated vs relation), get_field_design_guide.",
                     inputSchema: {
                         type: 'object',
                         properties: {},
@@ -1000,7 +1000,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                     {
                         uri: 'apito://project-query-guide',
                         name: 'Apito Project Query Structure Guide',
-                        description: 'where filters, connections (relations), pagination, mutations, and what is possible vs not',
+                        description: 'where filters, relation vs connection list filters (use relation for has_one/has_many/M:N), pagination, mutations, and what is possible vs not',
                         mimeType: 'text/markdown',
                     },
                     {
@@ -1774,15 +1774,72 @@ Full rules, examples, and payload notes: MCP tool **\`get_field_design_guide\`**
 
 Use \`OR: [{ field: { eq: "x" } }, { field: { eq: "y" } }]\` for OR logic. Use \`_key: { in: ["id1","id2"] }\` to filter by IDs (ignores rest of where).
 
-## Connection Queries (Relations)
+## Connection queries and list filters
 
-Relations are **bidirectional** (has_one, has_many). Query related data by selecting connection fields:
+Relations are **bidirectional** (has_one, has_many, many_to_many). Three related concepts:
 
-- **has_one**: Returns single object (e.g. \`author { ... }\`)
-- **has_many**: Returns list with \`where\`, \`page\`, \`limit\`, \`sort\` (e.g. \`bookList(where: {...}, page: 1, limit: 10)\`)
+1. **Nested selection** — load related rows in the query result (\`class { id data { name } }\`, \`studentList { … }\`).
+2. **\`relation\` list filter** — **default** way to filter a list by a linked model (has_one, has_many, M:N).
+3. **\`connection\` list filter** — **advanced only**; anchor document + direction metadata. **Do not use** for simple “find rows whose related X matches …”.
 
-Use \`relation\` to filter by related model: \`taskList(relation: { category: { name: { eq: "urgent" } } })\`
-Use \`connection\` for connection metadata: \`connection_type\` (forward/backward), \`_id\`, \`to_model\`, \`relation_type\`
+### \`relation\` filter (use this)
+
+Filter \`*List\` queries by conditions on a **related model**. Keys are the related model name or \`known_as\` from \`get_model_schema\` → \`connections[]\`.
+
+Each relation key supports:
+
+- **\`_id\`** — \`eq\`, \`ne\`, \`in\`, \`not_in\` on the related document id
+- **Related scalar fields** — same operators as \`where\` on that model
+
+**Example — student has one class; class has many students** (find students in one class):
+
+\`\`\`graphql
+query MyQuery {
+  studentList(relation: { class: { _id: { eq: "01KW4M8K7WR57HB3G0DWN48CTZ" } } }) {
+    id
+    data { name }
+    class {
+      id
+      data { name code }
+    }
+  }
+}
+\`\`\`
+
+By related field instead of id:
+
+\`\`\`graphql
+studentList(relation: { class: { code: { eq: "C100" } } }) {
+  id
+  data { name }
+}
+\`\`\`
+
+| Geometry | Typical filter |
+|----------|------------------|
+| **has_one** (FK on listed model) | \`studentList(relation: { class: { … } })\` |
+| **has_many** (FK on child) | \`parentList(relation: { child: { … } })\` or filter from the child list |
+| **many_to_many** | \`articleList(relation: { tag: { _id: { eq: "…" } } })\` |
+
+Combine \`relation\` with \`where\`, \`page\`, \`limit\`, and \`sort\`.
+
+### \`connection\` filter (advanced — rarely needed)
+
+Only when you must constrain a list from a **specific anchor document** with explicit \`connection_type\` (forward/backward), \`to_model\`, and \`relation_type\`. **Not** for everyday “students in class X” / “orders for customer Y” — use \`relation\` above.
+
+\`\`\`graphql
+taskList(connection: {
+  _id: "anchor_doc_id"
+  connection_type: backward
+  to_model: task
+  relation_type: has_many
+})
+\`\`\`
+
+### Nested selection (loading related data)
+
+- **has_one**: single object — \`author { id data { name } }\`
+- **has_many**: nested list with \`where\`, \`page\`, \`limit\`, \`sort\` — \`bookList(where: {...}, page: 1, limit: 10) { id data { title } }\`
 
 **Schema link removal (MCP \`delete_relation\`):** one \`deleteConnectionFromModel\` call **drops the connection on both models** (forward and reverse). Pick either model as \`from_model\`, the peer as \`to_model\`, correct \`known_as\` — then **do not** delete again from the other model for the same edge.
 
@@ -1802,7 +1859,7 @@ Use \`connection\` for connection metadata: \`connection_type\` (forward/backwar
 
 ## What Is Possible vs Not
 
-**Possible**: CRUD, filters by field type, OR/AND, pagination, sort, groupBy, relations (has_one, has_many), relation/connection filters, locale, draft/published.
+**Possible**: CRUD, filters by field type, OR/AND, pagination, sort, groupBy, relations (has_one, has_many, M:N), **\`relation\` list filters** (default for cross-model list filtering), **\`connection\` list filters** (advanced anchor traversal only), locale, draft/published.
 **Not**: Raw SQL, cross-model filters without relation, recursive graph traversal, full-text across all fields, schema changes via project API.
 
 Use the \`get_project_query_structure\` tool to get the mapping for your project models. For nested object/repeated field selection rules (avoid extra \`data\` wrappers on embedded object/repeated fields), call MCP tool \`get_field_design_guide\` or read resource \`apito://field-design-guide\`.

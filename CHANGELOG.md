@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **`apito://project-query-guide`** / `get_project_query_structure` / `PLAN_APITO_QUERY_STRUCTURE.md`: document **`relation`** as the default list filter for has_one, has_many, and many_to_many (including `_id` and related scalar fields). Clarify **`connection`** is advanced anchor traversal only — not for everyday “students in class X” filtering. Example: `studentList(relation: { class: { _id: { eq: "…" } } })`.
+
 ## [1.3.0] - 2026-06-26
 
 ### Added — platform management (~99% Console admin coverage)

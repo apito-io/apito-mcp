@@ -529,7 +529,7 @@ Returns the new category with `id`. Then create an article connected to that cat
 Model schemas and the query structure guide are exposed as resources with URIs:
 
 - `apito://schema-versioning-guide` - Draft vs live schema, verification tools, MCP never publishes, data after publish
-- `apito://project-query-guide` - Apito query structure: **response shape** (id, data, meta), **multiline/geo/media sub-selection** (content { html }, location { lat lon }, thumbnail { url }), naming, `where` filters, connections, pagination, mutations
+- `apito://project-query-guide` - Apito query structure: **response shape** (id, data, meta), **multiline/geo/media sub-selection**, naming, `where` filters, **`relation` list filters** (default for has_one / has_many / M:N — e.g. `studentList(relation: { class: { _id: { eq: "…" } } })`), **`connection` filter** (advanced anchor traversal only — not for everyday related-model filtering), pagination, mutations
 - `apito://field-design-guide` - Object vs repeated vs relation field selection rules
 - `apito://model/{modelName}` - Model schema as JSON (effective schema when draft exists)
 
@@ -672,8 +672,34 @@ All errors are logged to stderr (important for STDIO servers).
 5. **Parent Fields**: Use `parent_field` parameter when adding nested fields to object or repeated fields
 6. **API Keys**: For remote deployments, API keys are project-dependent and must be provided per-request, not stored as Cloudflare secrets
 7. **Relations**: Use `add_relation` to create bidirectional relationships between models
+8. **List filters by related model**: On public `*List` queries, use **`relation`** — not **`connection`** — to filter by linked models (has_one, has_many, M:N). Example: `studentList(relation: { class: { _id: { eq: "…" } } })` when student has one class. Read `apito://project-query-guide` for full examples; `connection` is only for advanced anchor-document traversal.
 
-## Using with MCP Clients
+## Public GraphQL: `relation` vs `connection` list filters
+
+When calling the **public** project GraphQL API (not MCP’s system `getModelData`):
+
+| Goal | Use | Example |
+|------|-----|---------|
+| Students in a given class | **`relation`** | `studentList(relation: { class: { _id: { eq: "01KW4M8K7WR57HB3G0DWN48CTZ" } } })` |
+| Students where class code is C100 | **`relation`** | `studentList(relation: { class: { code: { eq: "C100" } } })` |
+| Articles with a tag | **`relation`** | `articleList(relation: { tag: { _id: { eq: "…" } } })` |
+| Traverse from a known parent doc with direction metadata | **`connection`** (advanced) | See `apito://project-query-guide` |
+
+**`connection`** is for a specific graph-navigation case (anchor `_id` + `connection_type` + `to_model` + `relation_type`). For everyday “filter this list by my relation to model X”, always use **`relation`**.
+
+```graphql
+query MyQuery {
+  studentList(relation: { class: { _id: { eq: "01KW4M8K7WR57HB3G0DWN48CTZ" } } }) {
+    id
+    data { name }
+    class {
+      id
+      data { name code }
+    }
+  }
+}
+```
+
 
 ### Cursor IDE
 
