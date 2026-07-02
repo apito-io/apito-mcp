@@ -50,8 +50,27 @@ function connectionKey(connection: ApitoConnection): string {
   return `${connection.model ?? ''}|${connection.relation ?? ''}|${connection.type ?? ''}|${connection.known_as ?? ''}`;
 }
 
+function isProjectAuthUserModel(m: RawModel): boolean {
+  if (!m?.name) {
+    return false;
+  }
+  const ext = m.ext as Record<string, unknown> | undefined;
+  if (ext?.is_project_auth_user_model === true) {
+    return true;
+  }
+  return m.name.toLowerCase() === 'users' && !!m.system_generated;
+}
+
 function modelsFromSchema(schema: { models?: RawModel[] } | null): RawModel[] {
-  return (schema?.models ?? []).filter((m) => m?.name && !m.system_generated) as RawModel[];
+  return (schema?.models ?? []).filter((m) => {
+    if (!m?.name) {
+      return false;
+    }
+    if (isProjectAuthUserModel(m)) {
+      return true;
+    }
+    return !m.system_generated;
+  }) as RawModel[];
 }
 
 function toApitoModel(raw: RawModel): ApitoModel {
@@ -221,7 +240,7 @@ export function buildRelationGraphFromModels(models: ApitoModel[]): Record<strin
 export class SchemaVersioningContext {
   private statusCache: SchemaVersioningStatus | null = null;
 
-  constructor(private client: ApitoGraphQLClient) {}
+  constructor(private client: ApitoGraphQLClient) { }
 
   async getStatus(refresh = false): Promise<SchemaVersioningStatus> {
     if (!refresh && this.statusCache) {
@@ -319,8 +338,8 @@ export class SchemaVersioningContext {
     if (!liveNames.has(modelName.toLowerCase())) {
       throw new Error(
         `Model "${modelName}" exists only in the schema draft (not published). ` +
-          `Publish from Apito Console → Project Settings → Schema Changes before using upsert_data/get_data. ` +
-          `Use get_effective_schema to inspect the draft.`
+        `Publish from Apito Console → Project Settings → Schema Changes before using upsert_data/get_data. ` +
+        `Use get_effective_schema to inspect the draft.`
       );
     }
   }
