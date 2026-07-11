@@ -2,8 +2,8 @@ import type { ApitoGraphQLClient, GraphQLRequestOptions } from '../graphql-clien
 import type { AppUserItem, LoginAppUserPayload } from '../types.js';
 
 const SEARCH_USERS = `
-  query SearchUsers($project_id: String!, $limit: Int, $offset: Int, $tenant_id: String) {
-    searchUsers(project_id: $project_id, limit: $limit, offset: $offset, tenant_id: $tenant_id) {
+  query SearchUsers($project_id: String!, $limit: Int, $offset: Int, $tenant_id: String, $q: String) {
+    searchUsers(project_id: $project_id, limit: $limit, offset: $offset, tenant_id: $tenant_id, q: $q) {
       count
       users {
         id
@@ -145,7 +145,7 @@ const GOOGLE_OAUTH_STATE = `
 
 export async function searchAppUsers(
   client: ApitoGraphQLClient,
-  args: { project_id: string; limit?: number; offset?: number; tenant_id?: string },
+  args: { project_id: string; limit?: number; offset?: number; tenant_id?: string; q?: string },
   reqOpts?: GraphQLRequestOptions
 ): Promise<{ count: number; users: AppUserItem[] }> {
   const result = await client.request<{

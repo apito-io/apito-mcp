@@ -27,7 +27,31 @@ function testEditionFiltering() {
     !openTools.some((t) => t.name === 'list_tenants'),
     'list_tenants hidden in open edition'
   );
+  assert(
+    proTools.some((t) => t.name === 'search_tenants'),
+    'search_tenants visible in pro edition'
+  );
+  assert(
+    !openTools.some((t) => t.name === 'search_tenants'),
+    'search_tenants hidden in open edition'
+  );
   assert(openTools.some((t) => t.name === 'search_app_users'), 'search_app_users visible in open edition');
+}
+
+function testSearchAppUsersSchema() {
+  const tool = PLATFORM_TOOL_DEFINITIONS.find((t) => t.name === 'search_app_users');
+  assert(tool != null, 'search_app_users defined');
+  const props = tool!.inputSchema as { properties?: Record<string, unknown> };
+  assert(props.properties?.q != null, 'search_app_users input includes q');
+}
+
+function testSearchTenantsSchema() {
+  const tool = PLATFORM_TOOL_DEFINITIONS.find((t) => t.name === 'search_tenants');
+  assert(tool != null, 'search_tenants defined');
+  assert(tool!.proOnly === true, 'search_tenants is pro-only');
+  const props = tool!.inputSchema as { properties?: Record<string, unknown> };
+  assert(props.properties?.q != null, 'search_tenants input includes q');
+  assert(props.properties?.project_id != null, 'search_tenants requires project_id');
 }
 
 function testPlatformToolRegistry() {
@@ -57,7 +81,11 @@ async function testLiveIntegration(endpoint: string, apiKey: string, projectId: 
     }
   }
 
-  const users = await searchAppUsers(client, projectId, { limit: 5, offset: 0 }, reqOpts);
+  const users = await searchAppUsers(
+    client,
+    { project_id: projectId, limit: 5, offset: 0, q: process.env.APITO_SEARCH_Q || undefined },
+    reqOpts
+  );
   console.log(`searchAppUsers: count=${users.count}, returned=${users.users.length}`);
 }
 
@@ -66,6 +94,12 @@ async function main() {
 
   testEditionFiltering();
   console.log('✅ filterToolsByEdition');
+
+  testSearchAppUsersSchema();
+  console.log('✅ search_app_users schema (q)');
+
+  testSearchTenantsSchema();
+  console.log('✅ search_tenants schema');
 
   testPlatformToolRegistry();
   console.log('✅ PLATFORM_TOOL_NAMES registry');

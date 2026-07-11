@@ -17,8 +17,25 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'list_tenants',
     proOnly: true,
-    description: '[pro] List SaaS tenant catalog rows for the current project (getTenants).',
+    description:
+      '[pro] List all SaaS tenant catalog rows (getTenants). Unbounded — prefer search_tenants for large catalogs or text filter.',
     inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'search_tenants',
+    proOnly: true,
+    description:
+      '[pro] Paginated SaaS tenant catalog search (searchTenants). Optional q filters name, id, domain, and data. Use instead of get_data search on tenant model.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: PROJECT_ID_PARAM,
+        limit: { type: 'number' },
+        offset: { type: 'number' },
+        q: { type: 'string', description: 'Free-text filter (case-insensitive contains)' },
+      },
+      required: ['project_id'],
+    },
   },
   {
     name: 'create_tenant',
@@ -89,7 +106,8 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   // --- App users ---
   {
     name: 'search_app_users',
-    description: '[core/pro] Search project app end-users (searchUsers). SaaS: pass tenant_id.',
+    description:
+      '[core/pro] Search project app end-users (searchUsers). Optional tenant_id and q (email, username, phone, id). Prefer over get_data on user model.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -97,6 +115,7 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
         limit: { type: 'number' },
         offset: { type: 'number' },
         tenant_id: TENANT_ID_PARAM,
+        q: { type: 'string', description: 'Free-text filter (case-insensitive contains)' },
       },
       required: ['project_id'],
     },
@@ -520,16 +539,19 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'list_data',
     description:
-      '[core] List/filter model records (getModelData). Prefer over get_data when paginating or filtering. Supports tenant_id for SaaS.',
+      '[core] List/filter model records (getModelData). Prefer where JSON filters over search (search is unreliable on JSON fields). SaaS tenant catalog → search_tenants; app users → search_app_users. Supports tenant_id for SaaS.',
     inputSchema: {
       type: 'object',
       properties: {
         model_name: { type: 'string' },
         page: { type: 'number' },
         limit: { type: 'number' },
-        where: { type: 'object' },
+        where: { type: 'object', description: 'Preferred filter — e.g. { "email": { "contains": "x" } }' },
         status: { type: 'string', enum: ['all', 'draft', 'published'] },
-        search: { type: 'string' },
+        search: {
+          type: 'string',
+          description: 'Legacy text search — unreliable; prefer where or platform tools (search_tenants, search_app_users)',
+        },
         tenant_id: TENANT_ID_PARAM,
       },
       required: ['model_name'],

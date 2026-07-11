@@ -69,6 +69,23 @@ const SEARCH_TENANTS_BY_DOMAIN = `
   }
 `;
 
+const SEARCH_TENANTS = `
+  query SearchTenants($project_id: String!, $limit: Int, $offset: Int, $q: String) {
+    searchTenants(project_id: $project_id, limit: $limit, offset: $offset, q: $q) {
+      count
+      tenants {
+        id
+        name
+        status
+        domain
+        icon
+        data
+        created_at
+      }
+    }
+  }
+`;
+
 export async function listTenants(
   client: ApitoGraphQLClient,
   reqOpts?: GraphQLRequestOptions
@@ -121,6 +138,17 @@ export async function generateTenantToken(
     generateTenantToken: { token: string; tenant_id: string; role?: string };
   }>(GENERATE_TENANT_TOKEN, args, reqOpts);
   return result.generateTenantToken;
+}
+
+export async function searchTenants(
+  client: ApitoGraphQLClient,
+  args: { project_id: string; limit?: number; offset?: number; q?: string },
+  reqOpts?: GraphQLRequestOptions
+): Promise<{ count: number; tenants: TenantListItem[] }> {
+  const result = await client.request<{
+    searchTenants: { count: number; tenants: TenantListItem[] };
+  }>(SEARCH_TENANTS, args, reqOpts);
+  return result.searchTenants;
 }
 
 export async function searchTenantByDomain(

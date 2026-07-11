@@ -1,0 +1,16 @@
+---
+description: Knowledge entry point for apito-mcp — read .knowledge/README.md before coding in apito/apito-mcp
+globs: apito/apito-mcp/**
+alwaysApply: false
+---
+
+# Knowledge base — apito-mcp
+
+This repo is part of the **apito** ecosystem inside a submodule monorepo.
+
+Read before coding:
+1. `.knowledge/README.md` — purpose, architecture, tool routing.
+2. `.memory/CURRENT.md` and `.memory/HANDOFF.md` — current working state.
+3. Monorepo root `.knowledge/WORKFLOW.md` — AI contract.
+
+`.knowledge/` = durable truth; `.memory/` = ephemeral working state.

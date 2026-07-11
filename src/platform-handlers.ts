@@ -28,6 +28,19 @@ export async function handlePlatformTool(
   switch (name) {
     case 'list_tenants':
       return textResult(await tenants.listTenants(client, ro));
+    case 'search_tenants':
+      return textResult(
+        await tenants.searchTenants(
+          client,
+          {
+            project_id: String(args.project_id),
+            limit: args.limit as number | undefined,
+            offset: args.offset as number | undefined,
+            q: args.q != null ? String(args.q) : undefined,
+          },
+          ro
+        )
+      );
     case 'create_tenant':
       return textResult(
         await tenants.createTenant(
@@ -85,6 +98,7 @@ export async function handlePlatformTool(
             limit: args.limit as number | undefined,
             offset: args.offset as number | undefined,
             tenant_id: args.tenant_id != null ? String(args.tenant_id) : undefined,
+            q: args.q != null ? String(args.q) : undefined,
           },
           ro
         )
@@ -448,6 +462,7 @@ export async function handlePlatformTool(
 
 export const PLATFORM_TOOL_NAMES = new Set([
   'list_tenants',
+  'search_tenants',
   'create_tenant',
   'update_tenant',
   'delete_tenant',

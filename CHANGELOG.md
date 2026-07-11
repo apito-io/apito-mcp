@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.4.0] - 2026-07-11
+
+### Added
+
+- **`search_tenants`** — paginated SaaS catalog search via system `searchTenants` with optional `q` (name, id, domain, data).
+- **`search_app_users` optional `q`** — parity with engine `searchUsers` free-text filter.
+
+### Changed
+
+- **`list_tenants`** description — unbounded; prefer `search_tenants` for large catalogs.
+- **`get_data` / `list_data`** — document `where` over `search`; append guidance when `search` is used; route catalog/users to platform tools.
+- Monorepo submodule at `apito/apito-mcp`; knowledge/memory scaffold.
+
 ## [Unreleased]
 
 ### Changed

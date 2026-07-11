@@ -33,7 +33,9 @@ https://accounts.google.com/o/oauth2/v2/auth?client_id=YOUR_CLIENT_ID&redirect_u
 
 | Tool | Purpose |
 |------|---------|
-| \`search_app_users\` | List users (optional \`tenant_id\`) |
+| \`list_tenants\` | Full catalog (unbounded) — prefer \`search_tenants\` when q or pagination needed |
+| \`search_tenants\` | Paginated catalog search with optional \`q\` |
+| \`search_app_users\` | List/search app auth users (optional \`tenant_id\`, \`q\`) |
 | \`create_app_user\` | Create with password |
 | \`update_app_user\` | Update email/phone/role |
 | \`delete_app_user\` | Remove user |

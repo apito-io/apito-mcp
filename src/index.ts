@@ -765,7 +765,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                 {
                     name: 'get_data',
                     description:
-                        'Query or list records from a model with optional filters, pagination, and search. When choosing which subfields to request, follow get_field_design_guide: nested object/repeated fields do not use an inner `data { }` wrapper; relations to other models do.',
+                        'Query or list records from a published model. Prefer where JSON filters over search (search is unreliable on JSON document fields). SaaS tenant catalog → search_tenants; app auth users → search_app_users — not get_data on tenant/user models. Follow get_field_design_guide for subfield selection.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -783,7 +783,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                             },
                             where: {
                                 type: 'object',
-                                description: 'JSON filter object',
+                                description: 'Preferred JSON filter — e.g. { "email": { "contains": "x" } }',
                             },
                             status: {
                                 type: 'string',
@@ -792,7 +792,8 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                             },
                             search: {
                                 type: 'string',
-                                description: 'Text search query',
+                                description:
+                                    'Legacy text search — unreliable; prefer where or search_tenants / search_app_users for catalog and users',
                             },
                         },
                         required: ['model_name'],
@@ -2055,11 +2056,16 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
             this.tenantReqOpts(args.tenant_id)
         );
 
+        const searchNote =
+            args.search != null && String(args.search).trim() !== ''
+                ? '\n\nNote: get_data search is unreliable on JSON fields. Prefer where filters, or search_tenants / search_app_users for SaaS catalog and app users.'
+                : '';
+
         return {
             content: [
                 {
                     type: 'text',
-                    text: `Found ${result.count} record(s) in "${args.model_name}".\n\n${JSON.stringify(result, null, 2)}`,
+                    text: `Found ${result.count} record(s) in "${args.model_name}".${searchNote}\n\n${JSON.stringify(result, null, 2)}`,
                 },
             ],
         };

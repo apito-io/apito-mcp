@@ -30,7 +30,7 @@ All platform tools use the same transport as existing MCP tools: **system GraphQ
 
 | Domain | Tools | Engine GraphQL (representative) |
 |--------|-------|--------------------------------|
-| **SaaS tenants** `[pro]` | `list_tenants`, `create_tenant`, `update_tenant`, `delete_tenant`, `generate_tenant_token`, `search_tenant_by_domain` | `getTenants`, `createTenant`, `updateTenant`, `deleteTenant`, `generateTenantToken`, `searchTenantsByDomain` |
+| **SaaS tenants** `[pro]` | `list_tenants`, **`search_tenants`**, `create_tenant`, `update_tenant`, `delete_tenant`, `generate_tenant_token`, `search_tenant_by_domain` | `getTenants`, **`searchTenants`**, `createTenant`, … |
 | **App end-users** | `search_app_users`, `create_app_user`, `update_app_user`, `delete_app_user`, `reset_app_user_password`, `login_app_user`, `google_oauth_state`, `login_app_user_google` | `searchUsers`, `createUser`, `updateUser`, `deleteUser`, `resetUserPassword`, `loginUser`, `googleOAuthState` |
 | **Schema versioning extras** `[pro]` | `get_schema_diff`, `list_schema_versions`, `list_schema_change_events`, `discard_schema_draft` | `schemaDiff`, `schemaVersions`, `schemaChangeEvents`, `discardSchemaDraft` |
 | **Project admin** | `list_roles`, `get_permissions_catalog`, `upsert_role`, `duplicate_role`, `delete_role`, `get_project_settings`, `update_project_settings`, `list_api_keys`, `create_api_key`, `delete_api_key`, `get_auth_settings`, `update_auth_settings`, `get_storage_settings`, `update_storage_settings`, `list_team_members`, `update_team_members` | `currentProject`, `upsertRoleToProject`, `generateProjectToken`, `updateProjectAuthentication`, etc. |
@@ -41,16 +41,17 @@ All platform tools use the same transport as existing MCP tools: **system GraphQ
 
 **SaaS tenant onboarding** `[pro]`
 
-1. `list_tenants` — inspect catalog rows (id, name, domain, metadata).
-2. `create_tenant` — provision a tenant (`name`, optional `domain`, optional `data` JSON string). On per-tenant separate DB projects, engine provisions the tenant database.
-3. `generate_tenant_token` — mint a tenant-scoped API token (`tenant_id`, `duration` as `YYYY-MM-DD`, optional `role`). **Sensitive** — treat like a secret.
-4. `search_tenant_by_domain` — resolve tenant by hostname for login routing (`project_id`, `domain`).
+1. `search_tenants` — paginated catalog with optional `q` (prefer over `list_tenants` for large projects).
+2. `list_tenants` — full unbounded catalog (small projects only).
+3. `create_tenant` — provision a tenant (`name`, optional `domain`, optional `data` JSON string). On per-tenant separate DB projects, engine provisions the tenant database.
+4. `generate_tenant_token` — mint a tenant-scoped API token (`tenant_id`, `duration` as `YYYY-MM-DD`, optional `role`). **Sensitive** — treat like a secret.
+5. `search_tenant_by_domain` — resolve tenant by hostname for login routing (`project_id`, `domain`).
 
 Pass **`tenant_id`** on subsequent data and app-user tools, or set `TENANT_ID` / `X-Apito-Tenant-ID` globally for the session.
 
 **App end-user administration**
 
-1. `search_app_users` with `project_id` (and `tenant_id` on SaaS) — paginated user list.
+1. `search_app_users` with `project_id` (optional `tenant_id`, optional `q`) — paginated user list; matches Console → Users.
 2. `create_app_user` — requires `password` plus `email` and/or `phone`; optional `role`, `username`, `tenant_id`.
 3. `update_app_user` / `reset_app_user_password` / `delete_app_user` — lifecycle management by `user_id`.
 
@@ -168,6 +169,28 @@ On **SaaS projects**, models can be:
 - **`list_models`** shows scope per model (`common`, `tenant-scoped`, `tenant catalogue`)
 
 Call **`get_project_context`** first on SaaS projects, then **`get_saas_model_guide`** before creating models.
+
+### MCP Client Configuration (Cursor / local stdio)
+
+**Monorepo path (this workspace):**
+
+```json
+{
+  "mcpServers": {
+    "my-project-mcp": {
+      "command": "npx",
+      "args": ["-y", "tsx", "/Users/diablo/Projects/monorepo/apito/apito-mcp/src/index.ts"],
+      "env": {
+        "APITO_GRAPHQL_ENDPOINT": "http://localhost:5050/system/graphql",
+        "APITO_API_KEY": "mcp-...",
+        "TENANT_ID": "optional-for-saas"
+      }
+    }
+  }
+}
+```
+
+Use one MCP server entry per Apito project API key. **Restart MCP** in Cursor after path or env changes.
 
 ### MCP Client Configuration (Cursor / mcp-remote)
 
