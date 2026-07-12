@@ -29,9 +29,10 @@ Query **published** project model documents via system GraphQL `getModelData`.
 | Mistake | Correct tool |
 |---------|--------------|
 | `get_data({ model_name: "tenant", search: "bdcoder" })` expecting SaaS catalog | `search_tenants({ project_id, q: "bdcoder" })` |
+| `get_data` / dynamic CRUD on `tenant` for create/update/delete lifecycle | `create_tenant`, `update_tenant`, `delete_tenant` (platform tools) |
 | `get_data` on user model for auth user counts | `search_app_users({ project_id, q: "..." })` |
 
-Secured **`tenant`** / **`vendor_profile`** rows are **project documents**, not the SaaS **tenant catalog** (`search_tenants`).
+Secured **`tenant`** / **`vendor_profile`** rows are **project documents** (mirror/FK anchors), not the SaaS **tenant catalog** (`search_tenants`). After tenant user-parity, the engine removes dynamic public roots for the tenant model; agents must not recreate lifecycle via `get_data`/`upsert_data`.
 
 ## SaaS `tenant_id`
 
