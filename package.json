@@ -1,6 +1,6 @@
 {
   "name": "apito-mcp",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "MCP server for Apito API builder and headless CMS",
   "type": "module",
   "main": "src/index.ts",

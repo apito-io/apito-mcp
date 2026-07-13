@@ -765,7 +765,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                 {
                     name: 'get_data',
                     description:
-                        'Query or list records from a published model. Prefer where JSON filters over search (search is unreliable on JSON document fields). SaaS tenant catalog → search_tenants; app auth users → search_app_users — not get_data on tenant/user models. Follow get_field_design_guide for subfield selection.',
+                        'Query or list records from a published model. Prefer where JSON filters over search (search is unreliable on JSON document fields). SaaS tenant catalog lifecycle → create_tenant/update_tenant/delete_tenant; catalog search → search_tenants. get_data on tenant is mirror/debug only. App auth users → search_app_users. Follow get_field_design_guide for subfield selection.',
                     inputSchema: {
                         type: 'object',
                         properties: {

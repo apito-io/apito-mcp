@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.4.1] - 2026-07-13
+
+### Added
+
+- **`search_tenants` `status` argument** — filter catalog by `active` (default), `deleted`, or `all`.
+
+### Changed
+
+- **`delete_tenant`** — documented as soft-delete only (`status=deleted`); hard delete remains Console-only.
+- **`create_tenant`**, **`list_data`**, **`get_data`** — clearer SaaS tenant lifecycle routing (catalog tools vs mirror `get_data`).
+- **`schema-versioning.ts`** — `RawModel.ext` typing fix so `npm run build` typechecks cleanly.
+
 ## [1.4.0] - 2026-07-11
 
 ### Added

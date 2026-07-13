@@ -15,6 +15,7 @@ type RawModel = {
   single_page?: boolean;
   is_common_model?: boolean;
   system_generated?: boolean;
+  ext?: Record<string, unknown>;
   fields?: ApitoField[];
   connections?: ApitoConnection[];
 };

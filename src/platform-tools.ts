@@ -25,7 +25,7 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
     name: 'search_tenants',
     proOnly: true,
     description:
-      '[pro] Paginated SaaS tenant catalog search (searchTenants). Optional q filters name, id, domain, and data. Use instead of get_data search on tenant model.',
+      '[pro] Paginated SaaS tenant catalog search (searchTenants). Optional q filters name, id, domain, and data. Optional status: active (default), deleted, or all. Use instead of get_data search on tenant model.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -33,6 +33,10 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
         limit: { type: 'number' },
         offset: { type: 'number' },
         q: { type: 'string', description: 'Free-text filter (case-insensitive contains)' },
+        status: {
+          type: 'string',
+          description: 'Catalog status filter: active (default), deleted, or all',
+        },
       },
       required: ['project_id'],
     },
@@ -40,7 +44,8 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'create_tenant',
     proOnly: true,
-    description: '[pro] Create a tenant catalog row (createTenant). Provisions tenant DB when per-tenant separate DB is enabled.',
+    description:
+      '[pro] Create a tenant catalog row (createTenant). Provisions pro_tenants + mirrored project tenant row. Do not use get_data/upsert_data on the tenant model for lifecycle.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -69,7 +74,8 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'delete_tenant',
     proOnly: true,
-    description: '[pro] Delete/deactivate tenant catalog row (deleteTenant).',
+    description:
+      '[pro] Soft-delete tenant catalog row (deleteTenant). Sets status=deleted; content and mirror remain. Permanent purge requires Console hard delete — not exposed as an MCP tool.',
     inputSchema: {
       type: 'object',
       properties: { tenant_id: { type: 'string' } },
@@ -539,7 +545,7 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'list_data',
     description:
-      '[core] List/filter model records (getModelData). Prefer where JSON filters over search (search is unreliable on JSON fields). SaaS tenant catalog → search_tenants; app users → search_app_users. Supports tenant_id for SaaS.',
+      '[core] List/filter model records (getModelData). Prefer where JSON filters over search (search is unreliable on JSON fields). SaaS tenant catalog lifecycle → create_tenant/update_tenant/delete_tenant; catalog search → search_tenants. App users → search_app_users. get_data on tenant is mirror/debug only. Supports tenant_id for SaaS.',
     inputSchema: {
       type: 'object',
       properties: {

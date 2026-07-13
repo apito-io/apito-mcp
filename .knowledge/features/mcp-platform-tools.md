@@ -15,10 +15,10 @@ timestamp: 2026-07-11T00:00:00Z
 | MCP tool | Engine GraphQL | Notes |
 |----------|----------------|-------|
 | `list_tenants` | `getTenants` | Unbounded full list — avoid on large catalogs |
-| **`search_tenants`** | **`searchTenants`** | Paginated + optional `q` (name, id, domain, data) — **primary catalog search** |
+| **`search_tenants`** | **`searchTenants`** | Paginated + optional `q` (name, id, domain, data) + optional `status` (`active`, `deleted`, `all`) — **primary catalog search** |
 | `create_tenant` | `createTenant` | Creates `pro_tenants` + mirrored project tenant row |
 | `update_tenant` | `updateTenant` | Catalog row only |
-| `delete_tenant` | `deleteTenant` | Catalog row only |
+| `delete_tenant` | `deleteTenant` | **Soft delete** (`status=deleted`); content and mirror remain. Hard delete is Console-only (`hardDeleteTenant` + impact preview) — **not** an MCP tool |
 | `generate_tenant_token` | `generateTenantToken` | Sensitive |
 | `search_tenant_by_domain` | `searchTenantsByDomain` | Exact domain match |
 
@@ -45,4 +45,4 @@ When engine adds/changes system GraphQL ops, update:
 3. `CHANGELOG.md`, `.knowledge/features/mcp-platform-tools.md`
 4. `test-tenant-users.ts`
 
-Last Updated: 2026-07-11
+Last Updated: 2026-07-13

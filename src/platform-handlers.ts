@@ -37,6 +37,7 @@ export async function handlePlatformTool(
             limit: args.limit as number | undefined,
             offset: args.offset as number | undefined,
             q: args.q != null ? String(args.q) : undefined,
+            status: args.status != null ? String(args.status) : undefined,
           },
           ro
         )

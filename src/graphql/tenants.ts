@@ -70,8 +70,8 @@ const SEARCH_TENANTS_BY_DOMAIN = `
 `;
 
 const SEARCH_TENANTS = `
-  query SearchTenants($project_id: String!, $limit: Int, $offset: Int, $q: String) {
-    searchTenants(project_id: $project_id, limit: $limit, offset: $offset, q: $q) {
+  query SearchTenants($project_id: String!, $limit: Int, $offset: Int, $q: String, $status: String) {
+    searchTenants(project_id: $project_id, limit: $limit, offset: $offset, q: $q, status: $status) {
       count
       tenants {
         id
@@ -142,7 +142,13 @@ export async function generateTenantToken(
 
 export async function searchTenants(
   client: ApitoGraphQLClient,
-  args: { project_id: string; limit?: number; offset?: number; q?: string },
+  args: {
+    project_id: string;
+    limit?: number;
+    offset?: number;
+    q?: string;
+    status?: string;
+  },
   reqOpts?: GraphQLRequestOptions
 ): Promise<{ count: number; tenants: TenantListItem[] }> {
   const result = await client.request<{
