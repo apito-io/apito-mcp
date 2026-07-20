@@ -4,5 +4,6 @@
 |-----|-------|
 | [mcp-platform-tools.md](mcp-platform-tools.md) | Tenant catalog, app users, project admin tool matrix |
 | [mcp-data-plane.md](mcp-data-plane.md) | `get_data`, `where`, when not to use `search` |
+| [mcp-functions-lifecycle.md](mcp-functions-lifecycle.md) | Logic functions author → test → deploy → invoke tools |
 
-Last Updated: 2026-07-11
+Last Updated: 2026-07-16

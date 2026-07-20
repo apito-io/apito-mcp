@@ -1,26 +1,27 @@
 # apito-mcp — Handoff
 
-**Branch:** `master` | **Tag:** v1.4.0
+**Branch:** `master` | last tagged **v1.4.1** (functions work untagged)
 
-## Done (2026-07-11)
+## Done (2026-07-18 — Logic functions lifecycle)
 
-- Registered as monorepo submodule `apito/apito-mcp`
-- Knowledge scaffold (`.knowledge/`, `.memory/`, AGENTS.md)
-- **`search_tenants`** — `searchTenants` with `q` pagination
-- **`search_app_users`** — added `q` param (engine v2.4.13 parity)
-- Hardened `get_data` / `list_data` descriptions; data-plane feature doc
-- MCP config paths → `monorepo/apito/apito-mcp`
-- Tagged **v1.4.0**; monorepo pointer at `d161f19`
+- `src/graphql/functions.ts` — projectFunctionsInfo + upsert/test/deploy/rollback
+  + list revisions/deployments
+- Expanded `list_functions` / `upsert_function`; new tools:
+  `test_function_draft`, `deploy_function`, `execute_function`,
+  `list_function_revisions`, `list_function_deployments`, `rollback_function`
+- REST base from GraphQL endpoint; optional `APITO_REST_ENDPOINT`; secret masking
+- Feature doc `mcp-functions-lifecycle.md`; README/CHANGELOG; `test-functions.ts`
+- **Verified:** Rosna `execute_function` `listFoodNames` → HTTP 200
 
 ## Next
 
-- **Restart MCP** in Cursor after pull (path change)
-- Verify `search_tenants` / `search_app_users` against engine v2.4.13 on `:5050`
+- User confirm → commit; optional version bump / Workers deploy
+- Restart MCP in Cursor after pull
 
 ## Do not touch
 
 - `APITO_MCP_EDITION=open` pro tool hiding without updating tests
-- Untracked `src/apito-naming.ts` / `test-naming.ts` — review before committing
+- Plan file `.cursor/plans/mcp_cli_functions_74d67203.plan.md` unless user asks
 
 ## Last Updated
-2026-07-11
+2026-07-18

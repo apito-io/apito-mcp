@@ -1,5 +1,29 @@
 # apito-mcp — AI Changelog
 
+## 2026-07-18 — Logic functions lifecycle tools
+
+### Changed
+
+- Added `src/graphql/functions.ts`; moved function ops out of `integrations.ts`
+- Expanded `list_functions` / `upsert_function` (source, capabilities, runtime)
+- New tools: `test_function_draft`, `deploy_function`, `execute_function`,
+  `list_function_revisions`, `list_function_deployments`, `rollback_function`
+- REST helper on GraphQL client; `APITO_REST_ENDPOINT` override; secret masking
+- Feature doc, README workflow, CHANGELOG; `npm run test:functions`
+
+### Why
+
+Parity with Console Logic workspace so agents can author/test/deploy/invoke
+Deno functions without new engine GraphQL.
+
+### Affected
+
+`src/graphql/functions.ts`, `graphql-client.ts`, `platform-tools.ts`,
+`platform-handlers.ts`, `test-functions.ts`, `.knowledge/features/`, README,
+CHANGELOG
+
+---
+
 ## 2026-07-11 — v1.4.0 monorepo + search parity
 
 ### Changed
