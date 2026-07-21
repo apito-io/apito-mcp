@@ -3,6 +3,7 @@ import * as tenants from './graphql/tenants.js';
 import * as appUsers from './graphql/app-users.js';
 import * as projectAdmin from './graphql/project-admin.js';
 import * as integrations from './graphql/integrations.js';
+import * as functions from './graphql/functions.js';
 import * as dataPlane from './graphql/data-plane.js';
 import { getSaasAuthGuideContent } from './guides/saas-auth-guide.js';
 
@@ -14,8 +15,81 @@ function textResult(data: unknown, prefix?: string): { content: { type: 'text'; 
 }
 
 function reqOpts(args: Record<string, unknown>): GraphQLRequestOptions | undefined {
+  const pid = typeof args.project_id === 'string' ? args.project_id.trim() : '';
   const tid = typeof args.tenant_id === 'string' ? args.tenant_id.trim() : '';
-  return tid ? { tenantId: tid } : undefined;
+  return pid || tid ? { projectId: pid || undefined, tenantId: tid || undefined } : undefined;
+}
+
+/** Mask all but the last 4 chars of a secret for safe echoing in tool output. */
+function maskSecret(secret: string): string {
+  if (!secret) return '';
+  if (secret.length <= 4) return '****';
+  return `****${secret.slice(-4)}`;
+}
+
+/**
+ * `execute_function`: resolve project id + REST secret, then invoke the deployed
+ * (active-revision) function over REST. SaaS live calls require app_user_token as
+ * Bearer; tenant comes from JWT claims (never treat caller tenant_id as identity).
+ * Never echoes the raw secret or app_user_token unless reveal_secret=true (secret only).
+ */
+async function handleExecuteFunction(
+  client: ApitoGraphQLClient,
+  args: Record<string, unknown>,
+  ro: GraphQLRequestOptions | undefined
+): Promise<{ content: { type: 'text'; text: string }[] }> {
+  const name = String(args.name);
+  const appUserToken =
+    args.app_user_token != null ? String(args.app_user_token).trim() : '';
+
+  if (args.tenant_id != null && String(args.tenant_id).trim() !== '') {
+    throw new Error(
+      'execute_function: tenant_id is not accepted for live SaaS calls — pass app_user_token (Bearer JWT); tenant comes from verified claims. Use test_function_draft with tenant_id for admin draft testing.'
+    );
+  }
+
+  const projectId = ro?.projectId?.trim() ?? '';
+  if (!projectId) {
+    throw new Error('execute_function: resolved project_id is required');
+  }
+
+  const row = await functions.findFunction(client, name, ro);
+  if (!row) {
+    throw new Error(`execute_function: function "${name}" not found`);
+  }
+  if (!row.active_revision_id) {
+    throw new Error(
+      `execute_function: function "${name}" has no active revision — call deploy_function first`
+    );
+  }
+
+  const secret =
+    args.fn_hash != null ? String(args.fn_hash) : String(row.rest_api_secret_url_key ?? '');
+  if (!secret) {
+    throw new Error(
+      `execute_function: no REST secret available for "${name}" — deploy the function or pass fn_hash`
+    );
+  }
+
+  const result = await client.executeFunctionREST({
+    projectId,
+    name,
+    secret,
+    payload: args.payload,
+    appUserToken: appUserToken || undefined,
+  });
+
+  const revealSecret = args.reveal_secret === true;
+  return textResult({
+    project_id: projectId,
+    function: name,
+    active_revision_id: row.active_revision_id,
+    used_app_user_token: Boolean(appUserToken),
+    fn_hash: revealSecret ? secret : maskSecret(secret),
+    status: result.status,
+    ok: result.ok,
+    response: result.body,
+  });
 }
 
 export async function handlePlatformTool(
@@ -351,14 +425,28 @@ export async function handlePlatformTool(
     case 'remove_plugin':
       return textResult(await integrations.removePlugin(client, String(args.id), ro));
     case 'list_functions':
-      return textResult(await integrations.listFunctions(client, ro));
-    case 'upsert_function':
       return textResult(
-        await integrations.upsertFunction(
+        await functions.listFunctions(
+          client,
+          { name: args.name != null ? String(args.name) : undefined },
+          ro
+        )
+      );
+    case 'upsert_function': {
+      const runtime = args.runtime != null ? String(args.runtime) : undefined;
+      return textResult(
+        await functions.upsertFunction(
           client,
           {
             name: String(args.name),
             description: args.description != null ? String(args.description) : undefined,
+            source: args.source != null ? String(args.source) : undefined,
+            capabilities: args.capabilities as string[] | undefined,
+            language: args.language != null ? String(args.language) : undefined,
+            trigger_type: args.trigger_type != null ? String(args.trigger_type) : undefined,
+            graphql_schema_type:
+              args.graphql_schema_type != null ? String(args.graphql_schema_type) : undefined,
+            runtime_config: runtime ? { runtime } : undefined,
             function_connected: args.function_connected as boolean | undefined,
             function_provider_id:
               args.function_provider_id != null ? String(args.function_provider_id) : undefined,
@@ -367,8 +455,59 @@ export async function handlePlatformTool(
           ro
         )
       );
+    }
     case 'delete_function':
-      return textResult(await integrations.deleteFunction(client, String(args.function), ro));
+      return textResult(await functions.deleteFunction(client, String(args.function), ro));
+    case 'test_function_draft':
+      return textResult(
+        await functions.testFunctionDraft(
+          client,
+          {
+            name: String(args.name),
+            source: args.source != null ? String(args.source) : undefined,
+            payload: args.payload,
+            tenant_id: args.tenant_id != null ? String(args.tenant_id) : undefined,
+          },
+          ro
+        )
+      );
+    case 'deploy_function':
+      return textResult(
+        await functions.deployFunction(
+          client,
+          {
+            name: String(args.name),
+            source: args.source != null ? String(args.source) : undefined,
+          },
+          ro
+        )
+      );
+    case 'execute_function':
+      return await handleExecuteFunction(client, args, ro);
+    case 'list_function_revisions':
+      return textResult(
+        await functions.listFunctionRevisions(
+          client,
+          { name: String(args.name), limit: args.limit as number | undefined },
+          ro
+        )
+      );
+    case 'list_function_deployments':
+      return textResult(
+        await functions.listFunctionDeployments(
+          client,
+          { name: String(args.name), limit: args.limit as number | undefined },
+          ro
+        )
+      );
+    case 'rollback_function':
+      return textResult(
+        await functions.rollbackFunction(
+          client,
+          { name: String(args.name), revision_id: String(args.revision_id) },
+          ro
+        )
+      );
     case 'list_media':
       return textResult(
         await integrations.listMedia(
@@ -506,6 +645,12 @@ export const PLATFORM_TOOL_NAMES = new Set([
   'list_functions',
   'upsert_function',
   'delete_function',
+  'test_function_draft',
+  'deploy_function',
+  'execute_function',
+  'list_function_revisions',
+  'list_function_deployments',
+  'rollback_function',
   'list_media',
   'upload_media_from_url',
   'delete_media',

@@ -99,53 +99,6 @@ const REMOVE_PLUGIN = `
   }
 `;
 
-const LIST_FUNCTIONS = `
-  query ListAllFunctionInfo {
-    projectFunctionsInfo {
-      name
-      description
-      graphql_schema_type
-      function_connected
-      function_provider_id
-      created_at
-      updated_at
-    }
-  }
-`;
-
-const UPSERT_FUNCTION = `
-  mutation UpsertFunctionToProject(
-    $name: String!
-    $description: String
-    $function_connected: Boolean
-    $function_provider_id: String
-    $update: Boolean
-  ) {
-    upsertFunctionToProject(
-      name: $name
-      description: $description
-      function_connected: $function_connected
-      function_provider_id: $function_provider_id
-      update: $update
-    ) {
-      name
-      description
-      graphql_schema_type
-      function_connected
-      function_provider_id
-    }
-  }
-`;
-
-const DELETE_FUNCTION = `
-  mutation DeleteFunctionFromProject($function: String!) {
-    deleteFunctionFromProject(function: $function) {
-      id
-      name
-    }
-  }
-`;
-
 const LIST_MEDIA = `
   query ListMedia($limit: Int, $page: Int, $search: String) {
     listAllDataOfAMedia(limit: $limit, page: $page, search: $search) {
@@ -250,47 +203,6 @@ export async function removePlugin(
     reqOpts
   );
   return result.removeProjectSpecificPlugin;
-}
-
-export async function listFunctions(client: ApitoGraphQLClient, reqOpts?: GraphQLRequestOptions) {
-  const result = await client.request<{ projectFunctionsInfo: unknown[] }>(
-    LIST_FUNCTIONS,
-    {},
-    reqOpts
-  );
-  return result.projectFunctionsInfo ?? [];
-}
-
-export async function upsertFunction(
-  client: ApitoGraphQLClient,
-  args: {
-    name: string;
-    description?: string;
-    function_connected?: boolean;
-    function_provider_id?: string;
-    update?: boolean;
-  },
-  reqOpts?: GraphQLRequestOptions
-) {
-  const result = await client.request<{ upsertFunctionToProject: unknown }>(
-    UPSERT_FUNCTION,
-    args,
-    reqOpts
-  );
-  return result.upsertFunctionToProject;
-}
-
-export async function deleteFunction(
-  client: ApitoGraphQLClient,
-  functionName: string,
-  reqOpts?: GraphQLRequestOptions
-) {
-  const result = await client.request<{ deleteFunctionFromProject: unknown }>(
-    DELETE_FUNCTION,
-    { function: functionName },
-    reqOpts
-  );
-  return result.deleteFunctionFromProject;
 }
 
 export async function listMedia(

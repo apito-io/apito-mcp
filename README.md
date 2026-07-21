@@ -19,12 +19,42 @@ A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API bui
 - **Schema versioning (pro)**: Stage schema mutations into a draft; verify via `get_effective_schema`; user publishes in Console — MCP never publishes
 - **Platform management (v1.3)**: Full project administration beyond schema — tenant catalog, app end-users, auth testing, roles/settings/API keys, webhooks/plugins/functions/media, and extended data operations (~99% Console admin via system GraphQL)
 - **Edition split**: `APITO_MCP_EDITION=open` hides pro-only tools (tenant catalog, some schema versioning extras); default is `pro`
+- **Explicit project scope**: exact allowlist, canonical `X-Apito-Project-Id`, and project-bound write leases prevent cross-project tool calls
+
+## Project scope and write leases
+
+Project access is fail-closed. Configure:
+
+- `APITO_ALLOWED_PROJECT_IDS` — required comma-separated exact project IDs
+- `APITO_DEFAULT_PROJECT_ID` — optional read default; must be in the allowlist
+- `APITO_ALLOWED_TENANTS_BY_PROJECT` — optional JSON map of project ID to exact tenant ID arrays
+- `APITO_PROJECT_SCOPE_TTL_SECONDS` — preparation/lease TTL (default `300`)
+
+Reads require `project_id` unless the default is configured. Writes require explicit
+`project_id` and `scope_lease`; destructive tools additionally require
+`confirm_destructive: true`. Obtain a lease with:
+
+1. `prepare_project_scope({ project_id, tenant_id? })`
+2. Explicitly verify the returned project/tenant, then call
+   `confirm_project_scope({ project_id, tenant_id?, preparation_id })`
+3. Pass the returned lease only to writes for that exact project/tenant.
+
+`get_project_scope` reports the allowlist/default and active lease summaries without
+revealing lease tokens. Leases are random, short-lived, and project-bound; there is
+no mutable current-project selection.
+
+Every scoped GraphQL call sends only the canonical project header
+`X-Apito-Project-Id` plus optional `X-Apito-Tenant-ID`. No alternate project header
+spellings are recognized. `apt_` requests never send the legacy temporary tenant
+cookie.
 
 ## Platform management tools (v1.3)
 
 Prior to v1.3, MCP covered **schema design**, **draft versioning (read)**, and **model data CRUD** only. SaaS operators still had to open Console for tenants, app users, roles, webhooks, and similar admin tasks. v1.3 adds **~50 platform tools** that mirror Console system GraphQL — so an LLM agent can provision tenants, manage end-users, configure project settings, and run integration setup in one MCP session alongside schema work.
 
-All platform tools use the same transport as existing MCP tools: **system GraphQL** (`/system/graphql` + `X-Apito-Key`). They are **not** public `/secured/graphql` operations. Tool descriptions are tagged **`[pro]`**, **`[core]`**, or **`[core/pro]`** for a future open-mcp vs pro-mcp package split.
+All platform tools use the same transport as existing MCP tools: **system GraphQL** (`/system/graphql` + `Authorization: Bearer <apt_...>`). They are **not** public `/secured/graphql` operations. Tool descriptions are tagged **`[pro]`**, **`[core]`**, or **`[core/pro]`** for a future open-mcp vs pro-mcp package split.
+
+If the access token's `project_ids`/capabilities grant doesn't cover an operation, the engine returns a `CAPABILITY_DENIED: missing capability <name>` GraphQL error, which surfaces verbatim in the tool call result — regenerate the token in Console → Access Token with the missing capability instead of retrying.
 
 ### Tool catalog by domain
 
@@ -34,7 +64,8 @@ All platform tools use the same transport as existing MCP tools: **system GraphQ
 | **App end-users** | `search_app_users`, `create_app_user`, `update_app_user`, `delete_app_user`, `reset_app_user_password`, `login_app_user`, `google_oauth_state`, `login_app_user_google` | `searchUsers`, `createUser`, `updateUser`, `deleteUser`, `resetUserPassword`, `loginUser`, `googleOAuthState` |
 | **Schema versioning extras** `[pro]` | `get_schema_diff`, `list_schema_versions`, `list_schema_change_events`, `discard_schema_draft` | `schemaDiff`, `schemaVersions`, `schemaChangeEvents`, `discardSchemaDraft` |
 | **Project admin** | `list_roles`, `get_permissions_catalog`, `upsert_role`, `duplicate_role`, `delete_role`, `get_project_settings`, `update_project_settings`, `list_api_keys`, `create_api_key`, `delete_api_key`, `get_auth_settings`, `update_auth_settings`, `get_storage_settings`, `update_storage_settings`, `list_team_members`, `update_team_members` | `currentProject`, `upsertRoleToProject`, `generateProjectToken`, `updateProjectAuthentication`, etc. |
-| **Integrations** | `list_webhooks`, `create_webhook`, `delete_webhook`, `list_plugins`, `configure_plugin`, `remove_plugin`, `list_functions`, `upsert_function`, `delete_function`, `list_media`, `upload_media_from_url`, `delete_media` | `createWebHook`, `upsertPlugin`, `upsertFunctionToProject`, `uploadImageFromURL`, etc. |
+| **Integrations** | `list_webhooks`, `create_webhook`, `delete_webhook`, `list_plugins`, `configure_plugin`, `remove_plugin`, `list_media`, `upload_media_from_url`, `delete_media` | `createWebHook`, `upsertPlugin`, `uploadImageFromURL`, etc. |
+| **Logic functions** | `list_functions`, `upsert_function`, `delete_function`, `test_function_draft`, `deploy_function`, `execute_function`, `list_function_revisions`, `list_function_deployments`, `rollback_function` | `projectFunctionsInfo`, `upsertFunctionToProject`, `testFunctionDraft`, `deployFunctionToProject`, `listFunctionRevisions`, `listFunctionDeployments`, `rollbackFunctionDeployment`, REST `POST /function/:project/:name` |
 | **Data plane** | `list_data`, `connect_relation`, `disconnect_relation`, `get_model_document_counts`, `list_document_revisions`, `reorder_fields` | `getModelData`, `upsertModelData` (connect/disconnect), `modelDocumentCounts`, `listDocumentRevisions`, `rearrangeSerialOfFieldType` |
 
 ### Typical workflows
@@ -76,8 +107,20 @@ Returned JWTs and generated API tokens are **sensitive**. Do not log or commit t
 
 - **Webhooks:** `list_webhooks` → `create_webhook` (events, model, url, name) → `delete_webhook`.
 - **Plugins:** `list_plugins` (by `type` enum, e.g. `STORAGE`, `FUNCTION`) → `configure_plugin` / `remove_plugin`.
-- **Functions:** `list_functions` → `upsert_function` → `delete_function`.
 - **Media:** `list_media` → `upload_media_from_url` → `delete_media` by ids.
+
+**Logic functions (Deno/TS lifecycle)**
+
+The full author → test → deploy → invoke loop mirrors the Console Logic workspace and reuses the engine's shipped GraphQL + REST callable.
+
+1. `list_functions` (optional `name` filter) — shows `source`, `capabilities`, `active_revision_id`, `trigger_type`, `runtime_config`, and `rest_api_secret_url_key`.
+2. `upsert_function` — saves the **draft** source (`source`, `capabilities`, `language`, `trigger_type`, `runtime`). Set `update: true` when editing an existing function.
+3. `test_function_draft` — runs the draft synchronously with a mock `payload` (admin-only, no `X-Fn-Hash`). Pass `tenant_id` for SaaS data reads. Returns `ok`, `response`, `error`, `duration_ms`, and `logs`.
+4. `deploy_function` — publishes the draft as an immutable revision and marks it active; response includes the new `active_revision_id`.
+5. `execute_function` — invokes the **deployed** (active-revision) function over REST (`POST /function/:project/:name`). Resolves the `X-Fn-Hash` from `rest_api_secret_url_key` automatically (pass `fn_hash` to override); the secret is masked in output unless `reveal_secret: true`. Errors clearly if the function was never deployed. Pass `tenant_id` for SaaS.
+6. `list_function_revisions` / `list_function_deployments` — history; `rollback_function` (`name`, `revision_id`) re-activates a prior revision.
+
+The REST base is derived from `APITO_GRAPHQL_ENDPOINT` (stripping `/system/graphql`); set `APITO_REST_ENDPOINT` to override for non-standard path layouts.
 
 **Extended data operations**
 
@@ -182,7 +225,9 @@ Call **`get_project_context`** first on SaaS projects, then **`get_saas_model_gu
       "args": ["-y", "tsx", "/Users/diablo/Projects/monorepo/apito/apito-mcp/src/index.ts"],
       "env": {
         "APITO_GRAPHQL_ENDPOINT": "http://localhost:5050/system/graphql",
-        "APITO_API_KEY": "mcp-...",
+        "APITO_API_KEY": "apt_...",
+        "APITO_ALLOWED_PROJECT_IDS": "your-project-id",
+        "APITO_DEFAULT_PROJECT_ID": "your-project-id",
         "TENANT_ID": "optional-for-saas"
       }
     }
@@ -190,7 +235,7 @@ Call **`get_project_context`** first on SaaS projects, then **`get_saas_model_gu
 }
 ```
 
-Use one MCP server entry per Apito project API key. **Restart MCP** in Cursor after path or env changes.
+`APITO_API_KEY` (or `APITO_AUTH_TOKEN`) must be a unified `apt_` access token generated in Console → Access Token, sent as `Authorization: Bearer`. Legacy `mcp-`/`cli-`/`sdk-` prefixed keys are retired — the server refuses to start with one (`TOKEN_FORMAT_RETIRED`). Use one MCP server entry per Apito project access token. **Restart MCP** in Cursor after path or env changes.
 
 ### MCP Client Configuration (Cursor / mcp-remote)
 
@@ -206,12 +251,12 @@ Add the apito-mcp server to your MCP client config (e.g. Cursor `~/.cursor/mcp.j
         "mcp-remote",
         "https://apito-mcp.apito.workers.dev/sse",
         "--header",
-        "X-Apito-Key:${APITO_API_KEY}",
+        "Authorization:Bearer ${APITO_API_KEY}",
         "--header",
         "X-Apito-Tenant-ID:${TENANT_ID}"
       ],
       "env": {
-        "APITO_API_KEY": "ak_your-api-key-here",
+        "APITO_API_KEY": "apt_your-access-token-here",
         "TENANT_ID": "optional-tenant-id-for-saas"
       }
     }
@@ -219,7 +264,7 @@ Add the apito-mcp server to your MCP client config (e.g. Cursor `~/.cursor/mcp.j
 }
 ```
 
-Replace `ak_your-api-key-here` with your Apito API key. The `X-Apito-Key` header is sent with each request to the remote worker.
+Replace `apt_your-access-token-here` with your Apito access token (Console → Access Token). The `Authorization: Bearer` header is sent with each request to the remote worker. (The worker also still accepts `X-Apito-Key` or `?api_key=` for backwards-compatible transport into the MCP server itself, but the outbound call from the MCP server to the engine always uses `Authorization: Bearer`.)
 
 ## MCP Tools
 
@@ -740,7 +785,7 @@ Add to `~/.cursor/mcp.json`:
         "/Users/your-username/Projects/apito/apito-mcp/src/index.ts"
       ],
       "env": {
-        "APITO_API_KEY": "your-api-key-here",
+        "APITO_API_KEY": "apt_your-access-token-here",
         "APITO_GRAPHQL_ENDPOINT": "https://api.apito.io/system/graphql"
       }
     }
@@ -760,17 +805,17 @@ Add to `~/.cursor/mcp.json`:
         "mcp-remote",
         "https://apito-mcp.apito.workers.dev/sse",
         "--header",
-        "X-Apito-Key:${APITO_API_KEY}"
+        "Authorization:Bearer ${APITO_API_KEY}"
       ],
       "env": {
-        "APITO_API_KEY": "your-api-key-here"
+        "APITO_API_KEY": "apt_your-access-token-here"
       }
     }
   }
 }
 ```
 
-**Note**: The API key is passed via the `X-Apito-Key` header using the `--header` flag. The `env.APITO_API_KEY` environment variable is automatically substituted by `mcp-remote`.
+**Note**: The access token is passed via the `Authorization: Bearer` header using the `--header` flag. The `env.APITO_API_KEY` environment variable is automatically substituted by `mcp-remote`. Tokens must be unified `apt_` access tokens (Console → Access Token) — legacy `mcp-`/`cli-`/`sdk-` prefixed keys are retired.
 
 Restart Cursor after configuration.
 

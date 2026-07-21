@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.5.0] - 2026-07-21
+
+### Added — Explicit project scope
+
+- Exact fail-closed project allowlist (`APITO_ALLOWED_PROJECT_IDS`), optional read default, optional per-project tenant allowlists, and configurable scope TTL.
+- `prepare_project_scope`, `confirm_project_scope`, and `get_project_scope`; random TTL-bound write leases are project/tenant-bound.
+- Central tool access metadata and schema decoration for read/write/destructive/secret classification.
+- Focused project-scope tests covering canonical headers, allowlists, lease mismatch/expiry, destructive confirmation, and independent cross-project reads.
+
+### Changed — Project routing
+
+- Every scoped GraphQL request sends canonical `X-Apito-Project-Id`; explicit GraphQL `project_id` variables must match it.
+- Writes require `project_id` + `scope_lease`; destructive tools additionally require `confirm_destructive: true`. Reads require `project_id` unless `APITO_DEFAULT_PROJECT_ID` is configured.
+- `execute_function` uses the centrally resolved project instead of querying implicit `currentProject`.
+- Worker request/cache/CORS isolation includes `X-Apito-Project-Id`; no mutable current-project lock.
+- `apt_` calls never send the temporary tenant cookie.
+
+### Changed — Secure SaaS live execute
+
+- **`execute_function`** — requires `app_user_token` (Bearer) for SaaS live identity; rejects authoritative `tenant_id` / no longer sends `X-Apito-Tenant-ID`. Token never echoed. Use `test_function_draft` + `tenant_id` for admin draft testing.
+
+### Added — Logic functions lifecycle
+
+- **`test_function_draft`**, **`deploy_function`**, **`execute_function`**, **`list_function_revisions`**, **`list_function_deployments`**, **`rollback_function`** — full author → test → deploy → invoke loop over the engine's shipped GraphQL lifecycle + REST callable (`POST /function/:project/:name`). All `[core]`.
+- **`list_functions`** — expanded to return `source`, `capabilities`, `active_revision_id`, `trigger_type`, `runtime_config`, and `rest_api_secret_url_key`; optional `name` filter.
+- **`upsert_function`** — extended args: `source`, `capabilities[]`, `language`, `trigger_type`, `runtime`, `graphql_schema_type`, `update`.
+- **`APITO_REST_ENDPOINT`** — optional override for the REST base used by `execute_function` (default derives from `APITO_GRAPHQL_ENDPOINT`).
+- New GraphQL module `src/graphql/functions.ts` (function ops moved out of `integrations.ts`); `execute_function` masks the resolved `X-Fn-Hash` unless `reveal_secret: true`.
+
+## [Unreleased]
+
 ## [1.4.1] - 2026-07-13
 
 ### Added
@@ -26,8 +57,6 @@ All notable changes to this project are documented in this file.
 - **`list_tenants`** description — unbounded; prefer `search_tenants` for large catalogs.
 - **`get_data` / `list_data`** — document `where` over `search`; append guidance when `search` is used; route catalog/users to platform tools.
 - Monorepo submodule at `apito/apito-mcp`; knowledge/memory scaffold.
-
-## [Unreleased]
 
 ### Changed
 

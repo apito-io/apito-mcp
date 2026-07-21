@@ -482,17 +482,40 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   },
   {
     name: 'list_functions',
-    description: '[core] List project functions (projectFunctionsInfo).',
-    inputSchema: { type: 'object', properties: {} },
+    description:
+      '[core] List project functions (projectFunctionsInfo). Returns source, capabilities, active_revision_id, trigger_type, runtime_config and rest_api_secret_url_key. Pass name to filter to a single function.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Optional: filter to one function by name.' },
+      },
+    },
   },
   {
     name: 'upsert_function',
-    description: '[core] Create or update project function (upsertFunctionToProject).',
+    description:
+      '[core] Create or update a project Logic function (upsertFunctionToProject). Saves the DRAFT source; call deploy_function to publish a revision. Set update=true when editing an existing function.',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string' },
         description: { type: 'string' },
+        source: {
+          type: 'string',
+          description: 'Draft function source (Deno/TS) for apito-functions runtime.',
+        },
+        capabilities: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Granted capabilities, e.g. ["data.read"].',
+        },
+        language: { type: 'string', description: 'e.g. "typescript".' },
+        trigger_type: { type: 'string', description: 'e.g. "function" / "callable".' },
+        runtime: {
+          type: 'string',
+          description: 'Runtime label recorded in runtime_config.runtime (e.g. "apito-deno").',
+        },
+        graphql_schema_type: { type: 'string' },
         function_connected: { type: 'boolean' },
         function_provider_id: { type: 'string' },
         update: { type: 'boolean' },
@@ -507,6 +530,110 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
       type: 'object',
       properties: { function: { type: 'string' } },
       required: ['function'],
+    },
+  },
+  {
+    name: 'test_function_draft',
+    description:
+      '[core] Admin DRAFT test via GraphQL (testFunctionDraft). Privileged project-admin session; no X-Fn-Hash / app-user JWT. Pass tenant_id for SaaS so the server validates and scopes data reads. Distinct from live execute_function.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        source: {
+          type: 'string',
+          description: 'Optional source override; defaults to the saved draft.',
+        },
+        payload: {
+          type: 'object',
+          description: 'Mock request payload passed to the handler.',
+        },
+        tenant_id: {
+          type: 'string',
+          description:
+            'Admin-selected SaaS tenant for draft test (validated server-side). Not used as live end-user identity.',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'deploy_function',
+    description:
+      '[core] Deploy the current draft (or given source) as a new immutable revision and mark it active (deployFunctionToProject). Returns function/revision/deployment incl. active_revision_id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        source: {
+          type: 'string',
+          description: 'Optional source to deploy; defaults to the saved draft.',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'execute_function',
+    description:
+      '[core] Live invoke of a DEPLOYED function via REST (POST /function/:project/:name). Sends X-Fn-Hash plus Authorization Bearer app-user JWT for SaaS (tenant/user from JWT claims only). Do not pass tenant_id as authoritative identity. System apt_ access tokens are for draft testing / management, not live SaaS identity.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        payload: { type: 'object', description: 'Request body sent to the function.' },
+        app_user_token: {
+          type: 'string',
+          description:
+            'App end-user JWT (Bearer). Required for SaaS live calls; tenant comes from token claims. Never echoed in tool output.',
+        },
+        fn_hash: {
+          type: 'string',
+          description: 'Optional explicit X-Fn-Hash; otherwise resolved from the function row.',
+        },
+        reveal_secret: {
+          type: 'boolean',
+          description: 'If true, include the resolved secret in the response (default: masked).',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'list_function_revisions',
+    description: '[core] List immutable revisions for a function (listFunctionRevisions).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'list_function_deployments',
+    description: '[core] List deployment history for a function (listFunctionDeployments).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'rollback_function',
+    description:
+      '[core] Roll back a function to a prior revision, making it active again (rollbackFunctionDeployment).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        revision_id: { type: 'string' },
+      },
+      required: ['name', 'revision_id'],
     },
   },
   {

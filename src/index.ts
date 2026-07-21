@@ -24,6 +24,14 @@ import { filterToolsByEdition } from './mcp-edition.js';
 import { PLATFORM_TOOL_DEFINITIONS } from './platform-tools.js';
 import { handlePlatformTool, PLATFORM_TOOL_NAMES } from './platform-handlers.js';
 import { getSaasAuthGuideContent } from './guides/saas-auth-guide.js';
+import {
+    PROJECT_SCOPE_TOOL_DEFINITIONS,
+    ProjectScopeManager,
+    applyProjectScopeSchema,
+    getToolAccessMetadata,
+    projectScopeConfigFromEnv,
+    type ProjectScopeConfig,
+} from './project-scope.js';
 
 const SOURCE_PARAM_SCHEMA = {
     type: 'string',
@@ -38,6 +46,8 @@ export class ApitoMCPServer {
     private graphqlEndpoint: string;
     private authToken: string;
     private graphqlClientOptions: ApitoGraphQLClientOptions;
+    private projectScope: ProjectScopeManager;
+    private executeScopedCall: boolean;
     private schemaCtx: SchemaVersioningContext | null = null;
     // Store handler references for HTTP transport
     private listToolsHandler?: (request: any) => Promise<any>;
@@ -50,11 +60,23 @@ export class ApitoMCPServer {
     constructor(
         graphqlEndpoint: string,
         apiKey: string,
-        graphqlClientOptions: ApitoGraphQLClientOptions = {}
+        graphqlClientOptions: ApitoGraphQLClientOptions = {},
+        projectScopeConfig?: ProjectScopeConfig,
+        projectScopeManager?: ProjectScopeManager,
+        executeScopedCall = false
     ) {
         this.graphqlEndpoint = graphqlEndpoint;
         this.authToken = apiKey;
         this.graphqlClientOptions = graphqlClientOptions;
+        this.projectScope =
+            projectScopeManager ??
+            new ProjectScopeManager(
+                projectScopeConfig ??
+                    projectScopeConfigFromEnv(
+                        typeof process !== 'undefined' ? process.env : {}
+                    )
+            );
+        this.executeScopedCall = executeScopedCall;
         this.server = new Server(
             {
                 name: 'apito-mcp',
@@ -178,18 +200,21 @@ export class ApitoMCPServer {
     }
 
     private buildGraphQLClientOptions(): ApitoGraphQLClientOptions {
-        if (this.graphqlClientOptions.tenantId || this.graphqlClientOptions.sendTempTenantCookie) {
-            return this.graphqlClientOptions;
-        }
         const tenantRaw =
             typeof process !== 'undefined'
                 ? process.env?.TENANT_ID || process.env?.APITO_TENANT_ID
                 : undefined;
-        const tenantId = typeof tenantRaw === 'string' ? tenantRaw.trim() : '';
+        const envTenantId = typeof tenantRaw === 'string' ? tenantRaw.trim() : '';
         const sendTemp =
-            typeof process !== 'undefined' && process.env?.APITO_MCP_TEMP_TENANT_COOKIE === 'true';
+            this.graphqlClientOptions.sendTempTenantCookie === true ||
+            (typeof process !== 'undefined' && process.env?.APITO_MCP_TEMP_TENANT_COOKIE === 'true');
+        // Always merge: a tenant-only constructor option must not drop the
+        // configured default project (Worker may pass tenant without project).
         return {
-            tenantId: tenantId || undefined,
+            projectId:
+                this.graphqlClientOptions.projectId?.trim() ||
+                this.projectScope.config.defaultProjectId,
+            tenantId: this.graphqlClientOptions.tenantId?.trim() || envTenantId || undefined,
             sendTempTenantCookie: sendTemp,
         };
     }
@@ -248,14 +273,20 @@ export class ApitoMCPServer {
         return tid ? { tenantId: tid } : undefined;
     }
 
+    private textToolResult(data: unknown) {
+        return {
+            content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
+        };
+    }
+
     private setupHandlers() {
         const platformTools = filterToolsByEdition(PLATFORM_TOOL_DEFINITIONS).map(
             ({ proOnly: _p, ...tool }) => tool
         );
 
         // List available tools
-        this.listToolsHandler = async () => ({
-            tools: [
+        this.listToolsHandler = async () => {
+            const tools = [
                 {
                     name: 'create_model',
                     description:
@@ -836,8 +867,14 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                     },
                 },
                 ...platformTools,
-            ],
-        });
+            ];
+            return {
+                tools: [
+                    ...PROJECT_SCOPE_TOOL_DEFINITIONS,
+                    ...tools.map((tool) => applyProjectScopeSchema(tool as any)),
+                ],
+            };
+        };
         this.server.setRequestHandler(ListToolsRequestSchema, this.listToolsHandler);
 
         // Handle tool calls
@@ -845,12 +882,57 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
             this.ensureClient();
 
             const { name, arguments: args } = request.params;
+            const input = (args ?? {}) as Record<string, unknown>;
+            const scopeInput = { ...input };
+            const configuredTenant = this.buildGraphQLClientOptions().tenantId?.trim();
+            if (!scopeInput.tenant_id && configuredTenant) {
+                scopeInput.tenant_id = configuredTenant;
+            }
 
             try {
+                if (name === 'prepare_project_scope') {
+                    return this.textToolResult(this.projectScope.prepare(scopeInput));
+                }
+                if (name === 'confirm_project_scope') {
+                    return this.textToolResult(this.projectScope.confirm(scopeInput));
+                }
+                if (name === 'get_project_scope') {
+                    return this.textToolResult(this.projectScope.inspect(input.project_id));
+                }
+
+                if (!this.executeScopedCall) {
+                    const scope = this.projectScope.resolve(name, scopeInput);
+                    const metadata = getToolAccessMetadata(name);
+                    const scopedArgs: Record<string, unknown> = {
+                        ...input,
+                    };
+                    if (scope) {
+                        scopedArgs.project_id = scope.projectId;
+                        if (scope.tenantId) scopedArgs.tenant_id = scope.tenantId;
+                    } else if (metadata.access !== 'unscoped') {
+                        throw new Error(`Could not resolve project scope for ${name}`);
+                    }
+                    const scopedServer = new ApitoMCPServer(
+                        this.graphqlEndpoint,
+                        this.authToken,
+                        {
+                            ...this.buildGraphQLClientOptions(),
+                            projectId: scope?.projectId,
+                            tenantId: scope?.tenantId ?? this.buildGraphQLClientOptions().tenantId,
+                        },
+                        this.projectScope.config,
+                        this.projectScope,
+                        true
+                    );
+                    return await scopedServer.callToolHandler!({
+                        params: { name, arguments: scopedArgs },
+                    } as any);
+                }
+
                 if (PLATFORM_TOOL_NAMES.has(name)) {
                     return await handlePlatformTool(
                         name,
-                        (args ?? {}) as Record<string, unknown>,
+                        input,
                         this.client!
                     );
                 }
@@ -1573,9 +1655,11 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
     private async handleGetProjectContext() {
         const ctx = await this.client!.getProjectContextForMCP();
         const opts = this.buildGraphQLClientOptions();
+        const sendsTempCookie =
+            opts.sendTempTenantCookie === true && !this.authToken.startsWith('apt_');
         const tenantHint =
-            opts.tenantId || opts.sendTempTenantCookie
-                ? `\n\nMCP is sending tenant context (X-Apito-Tenant-ID${opts.sendTempTenantCookie ? ' + temp_tenant_id cookie' : ''}) from env.`
+            opts.tenantId || sendsTempCookie
+                ? `\n\nMCP is sending tenant context (X-Apito-Tenant-ID${sendsTempCookie ? ' + temp_tenant_id cookie' : ''}) from env.`
                 : '\n\nNo TENANT_ID / APITO_TENANT_ID in env — for SaaS per-tenant DB, set tenant on the MCP process.';
 
         const saasHint =
@@ -2286,7 +2370,7 @@ Tools \`list_models\`, \`get_model_schema\`, and \`get_relation_graph\` accept o
 ## Environment
 
 - \`TENANT_ID\` / \`APITO_TENANT_ID\` — sent as \`X-Apito-Tenant-ID\` for SaaS per-tenant DB scope
-- \`APITO_MCP_TEMP_TENANT_COOKIE=true\` — also sends \`temp_tenant_id\` cookie when needed
+- \`APITO_MCP_TEMP_TENANT_COOKIE=true\` — legacy non-\`apt_\` fallback only; unified \`apt_\` requests never send this cookie
 
 ## SaaS model scope
 
@@ -2347,6 +2431,13 @@ if (isDirectRun) {
         console.error('[Apito MCP] Error: APITO_AUTH_TOKEN or APITO_API_KEY environment variable is required');
         process.exit(1);
     }
+    if (/^(cli-|sdk-|mcp-)/.test(token)) {
+        console.error(
+            '[Apito MCP] Error: TOKEN_FORMAT_RETIRED — cli-/sdk-/mcp- prefixed keys are no longer accepted. ' +
+                'Generate an apt_ access token in Console → Access Token and set APITO_AUTH_TOKEN / APITO_API_KEY to it.'
+        );
+        process.exit(1);
+    }
 
     // Log initialization (to stderr)
     console.error('[Apito MCP] Starting server...');
@@ -2356,7 +2447,9 @@ if (isDirectRun) {
         console.error(`[Apito MCP] TENANT_ID / APITO_TENANT_ID set (X-Apito-Tenant-ID will be sent)`);
     }
     if (process.env.APITO_MCP_TEMP_TENANT_COOKIE === 'true') {
-        console.error('[Apito MCP] APITO_MCP_TEMP_TENANT_COOKIE=true (also sending temp_tenant_id cookie)');
+        console.error(
+            '[Apito MCP] APITO_MCP_TEMP_TENANT_COOKIE=true (ignored for apt_ credentials)'
+        );
     }
 
     const server = new ApitoMCPServer(endpoint, token);

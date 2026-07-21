@@ -14,14 +14,17 @@ import type {
 
 /** Per-request overrides (e.g. tenant scope for a single tool call). */
 export type GraphQLRequestOptions = {
+  projectId?: string;
   tenantId?: string;
 };
 
 /** Optional headers for SaaS / MCP (see engine pro_token_hook tenant resolution). */
 export type ApitoGraphQLClientOptions = {
+  /** Sent only as the canonical `X-Apito-Project-Id` header. */
+  projectId?: string;
   /** Sent as `X-Apito-Tenant-ID` (preferred for per-tenant DB routing). */
   tenantId?: string;
-  /** If true and tenantId is set, also sends `Cookie: temp_tenant_id=…` (same fallback order as the engine). */
+  /** Legacy non-apt_ fallback only. Unified apt_ requests never send a tenant cookie. */
   sendTempTenantCookie?: boolean;
 };
 
@@ -36,11 +39,21 @@ export class ApitoGraphQLClient {
     this.defaultOptions = options;
   }
 
-  private buildHeaders(reqOpts?: GraphQLRequestOptions): Record<string, string> {
+  buildHeaders(reqOpts?: GraphQLRequestOptions): Record<string, string> {
+    // Unified apt_ access token sent as a standard bearer credential.
+    // X-Use-Cookies: false tells the engine this is a headless API call (no
+    // browser session cookies). Legacy mcp-/cli-/sdk- prefixed keys and the
+    // dual X-Apito-Key/X-Apito-Sync-Key header pair are retired — hard cut,
+    // no compatibility fallback.
     const headers: Record<string, string> = {
-      'X-Apito-Key': this.authToken,
+      Authorization: `Bearer ${this.authToken}`,
       'Content-Type': 'application/json',
+      'X-Use-Cookies': 'false',
     };
+    const projectId = (reqOpts?.projectId ?? this.defaultOptions.projectId)?.trim();
+    if (projectId) {
+      headers['X-Apito-Project-Id'] = projectId;
+    }
     const tid = (reqOpts?.tenantId ?? this.defaultOptions.tenantId)?.trim();
     if (tid) {
       headers['X-Apito-Tenant-ID'] = tid;
@@ -48,7 +61,7 @@ export class ApitoGraphQLClient {
     const sendCookie =
       this.defaultOptions.sendTempTenantCookie ||
       (typeof process !== 'undefined' && process.env?.APITO_MCP_TEMP_TENANT_COOKIE === 'true');
-    if (sendCookie && tid) {
+    if (sendCookie && tid && !this.authToken.startsWith('apt_')) {
       headers['Cookie'] = `temp_tenant_id=${encodeURIComponent(tid)}`;
     }
     return headers;
@@ -60,6 +73,14 @@ export class ApitoGraphQLClient {
     variables?: Record<string, unknown>,
     reqOpts?: GraphQLRequestOptions
   ): Promise<T> {
+    const projectId = (reqOpts?.projectId ?? this.defaultOptions.projectId)?.trim();
+    const variableProjectId =
+      typeof variables?.project_id === 'string' ? variables.project_id.trim() : '';
+    if (projectId && variableProjectId && projectId !== variableProjectId) {
+      throw new Error(
+        `PROJECT_SCOPE_MISMATCH: GraphQL project_id "${variableProjectId}" does not match X-Apito-Project-Id "${projectId}"`
+      );
+    }
     const client = new GraphQLClient(this.endpoint, {
       headers: this.buildHeaders(reqOpts),
     });
@@ -78,7 +99,11 @@ export class ApitoGraphQLClient {
           .map((e) => {
             const path = e.path ? ` (path: ${(e.path as string[]).join('.')})` : '';
             const code = e.extensions?.code ? ` [${e.extensions.code}]` : '';
-            return `${e.message}${code}${path}`;
+            const msg = e.message ?? '';
+            if (msg.includes('CAPABILITY_DENIED')) {
+              return `${msg}${code}${path}`;
+            }
+            return `${msg}${code}${path}`;
           })
           .join('; ');
         throw new Error(`GraphQL errors: ${errorMessages}`);
@@ -834,6 +859,77 @@ export class ApitoGraphQLClient {
       reqOpts
     );
     return result.duplicateModelData;
+  }
+
+  /**
+   * Derive the engine REST base from the GraphQL endpoint by stripping the
+   * `/system/graphql` (or `/secured/graphql`) suffix. Honors an explicit
+   * `APITO_REST_ENDPOINT` override for Studio / non-standard path layouts.
+   */
+  restBaseUrl(): string {
+    const override =
+      typeof process !== 'undefined' ? process.env?.APITO_REST_ENDPOINT?.trim() : undefined;
+    if (override) {
+      return override.replace(/\/+$/, '');
+    }
+    return this.endpoint
+      .replace(/\/system\/graphql\/?$/, '')
+      .replace(/\/secured\/graphql\/?$/, '')
+      .replace(/\/graphql\/?$/, '')
+      .replace(/\/+$/, '');
+  }
+
+  /**
+   * Invoke a deployed function via the public REST callable endpoint
+   * `POST {base}/function/{projectId}/{name}`. Sends `X-Fn-Hash` (the function's
+   * `rest_api_secret_url_key`) and optional `X-Apito-Tenant-ID` for SaaS routing.
+   * Runs the active (deployed) revision — not the draft.
+   */
+  async executeFunctionREST(args: {
+    projectId: string;
+    name: string;
+    secret: string;
+    payload?: unknown;
+    /** @deprecated Live SaaS uses appUserToken claims; do not send as identity. */
+    tenantId?: string;
+    /** App end-user JWT sent as Authorization Bearer for SaaS live calls. */
+    appUserToken?: string;
+  }): Promise<{ status: number; ok: boolean; body: unknown }> {
+    const url = `${this.restBaseUrl()}/function/${encodeURIComponent(
+      args.projectId
+    )}/${encodeURIComponent(args.name)}`;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Fn-Hash': args.secret,
+    };
+    const bearer = args.appUserToken?.trim();
+    if (bearer) {
+      headers['Authorization'] = `Bearer ${bearer}`;
+    }
+    // Intentionally omit X-Apito-Tenant-ID for live execute — tenant comes from JWT claims.
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(args.payload ?? {}),
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(`Function REST request failed (${url}): ${msg}`);
+    }
+
+    const text = await res.text();
+    let body: unknown = text;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    return { status: res.status, ok: res.ok, body };
   }
 }
 
