@@ -1,5 +1,30 @@
 # apito-mcp — AI Changelog
 
+## 2026-07-21 — Explicit project scope
+
+### Changed
+
+- Added exact project/tenant allowlists and canonical project GraphQL header
+- Added prepare/confirm/get scope tools with TTL-bound write leases
+- Centralized read/write/destructive/secret metadata and tool schema decoration
+- Isolated clients/schema context per scoped call; removed implicit project lookup
+- Added Worker project forwarding/cache/CORS isolation and focused tests/docs
+- Gap fix: Worker no longer mutates env scope config; tenant-only client options
+  keep default project; Worker responses set `Vary` for project/tenant isolation
+
+### Why
+
+Multi-project `apt_` tokens need fail-closed routing and explicit write confirmation
+without a mutable current-project lock that can leak across concurrent calls.
+
+### Affected
+
+`src/project-scope.ts`, `graphql-client.ts`, `index.ts`, `platform-handlers.ts`,
+`worker.ts`, `test-project-scope.ts`, package scripts, README/CHANGELOG,
+`.knowledge/`, `.memory/`
+
+---
+
 ## 2026-07-18 — Logic functions lifecycle tools
 
 ### Changed
@@ -46,4 +71,4 @@ CHANGELOG
 
 ---
 
-Last Updated: 2026-07-11
+Last Updated: 2026-07-21

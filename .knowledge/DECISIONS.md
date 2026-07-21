@@ -1,5 +1,18 @@
 # apito-mcp — Decisions
 
+## Explicit project scope; no mutable current project
+
+All project-scoped tools resolve through an exact environment allowlist. Reads require
+an explicit project unless a read default is configured. Writes use random,
+project-bound confirmation leases; destructive calls add a literal confirmation.
+Each call receives an isolated client/schema context and sends only
+`X-Apito-Project-Id`.
+
+**Reason:** A multi-project `apt_` token must not inherit project selection from a
+previous/concurrent tool call or from alternate header spellings.
+
+**Status:** Adopted 2026-07-21
+
 ## Tool routing: catalog and users vs documents
 
 | Need | Use | Do not use |
@@ -18,4 +31,4 @@ Pro-only tools (`list_tenants`, `search_tenants`, tenant CRUD, …) hidden when 
 
 **Status:** Adopted v1.3.0
 
-Last Updated: 2026-07-11
+Last Updated: 2026-07-21
