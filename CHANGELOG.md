@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.5.1] - 2026-07-22
+
+### Fixed
+
+- Deep nested `projectModelsInfo` / `sub_field_info` selection (depth 5) plus validation fields (`fixed_list_*`, `is_multi_choice`, `is_email`, `is_gallery`, `is_url`, `as_title`, `placeholder`, `locals`) so schema tooling sees the same nested trees as CLI sync.
+
 ## [1.5.0] - 2026-07-21
 
 ### Added — Explicit project scope

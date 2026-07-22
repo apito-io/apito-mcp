@@ -454,6 +454,33 @@ export class ApitoGraphQLClient {
   }
 
   async getProjectModelsInfo(modelName?: string): Promise<ApitoModel[]> {
+    // Nested selection covers deep repeated/object trees (e.g.
+    // exam.routine.details.date_and_time). Engine SubFieldInfo is recursive.
+    // Depth 5 under root; keep validation fields aligned with CLI sync.
+    const fieldSelection = `
+            identifier
+            label
+            field_type
+            field_sub_type
+            input_type
+            description
+            serial
+            parent_field
+            validation {
+              required
+              unique
+              hide
+              as_title
+              placeholder
+              locals
+              fixed_list_elements
+              fixed_list_element_type
+              is_multi_choice
+              is_email
+              is_gallery
+              is_url
+            }
+    `;
     const query = `
       query GetProjectModelsInfo($model_name: String) {
         projectModelsInfo(model_name: $model_name) {
@@ -461,25 +488,21 @@ export class ApitoGraphQLClient {
           single_page
           is_common_model
           fields {
-            identifier
-            label
-            field_type
-            input_type
-            description
-            serial
-            parent_field
+            ${fieldSelection}
             sub_field_info {
-              identifier
-              label
-              field_type
-              input_type
-              serial
-              parent_field
-            }
-            validation {
-              required
-              unique
-              hide
+              ${fieldSelection}
+              sub_field_info {
+                ${fieldSelection}
+                sub_field_info {
+                  ${fieldSelection}
+                  sub_field_info {
+                    ${fieldSelection}
+                    sub_field_info {
+                      ${fieldSelection}
+                    }
+                  }
+                }
+              }
             }
           }
           connections {
