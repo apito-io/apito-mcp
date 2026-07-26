@@ -2,6 +2,7 @@ node_modules/
 dist/
 .wrangler/
 *.log
-.env
-.env.local
 
+
+# env files tracked for single-dev monorepo setup (do not re-ignore .env / .env.local)
+.env.*.local
