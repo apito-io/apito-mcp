@@ -1,5 +1,13 @@
 # apito-mcp — AI Changelog
 
+## 2026-07-22 — v1.5.1 deep nested projectModelsInfo
+
+- **Changed:** Nested `sub_field_info` depth 5 + structural validation fields in GraphQL client.
+- **Why:** Parity with CLI sync so MCP schema tools see deep repeated/object trees.
+- **Affected:** `src/graphql-client.ts`, package **1.5.1**. Tagged/pushed.
+
+---
+
 ## 2026-07-21 — Explicit project scope
 
 ### Changed
