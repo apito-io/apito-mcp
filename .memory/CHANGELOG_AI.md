@@ -1,5 +1,29 @@
 # apito-mcp — AI Changelog
 
+## 2026-07-28/29 — update_field nested parent + GraphQL map plan
+
+- **Changed:** `update_field` accepts `parent_field` / `field_sub_type` for
+  nested metadata updates (e.g. import measurement dropdowns). Planned
+  (not coded) v1.6: `get_public_graphql_model_map`, `probe_public_document`,
+  scope sticky lease/TTL — plan `improve_apito_mcp_gaps_62f8ec7c`.
+- **Why:** Nested updates without `parent_field` staged wrong root fields;
+  agents need public GraphQL field map beyond system schema CRUD.
+- **Affected:** `src/index.ts` (update_field). Plan only for map/probe.
+  Ask before commit / implement plan.
+
+---
+
+## 2026-07-28 — rename_model tool
+
+- **Changed:** Added `rename_model({ model_name, new_name, project_id, scope_lease })`
+  staging via system `updateModel(type: rename)`. Docs: README, CHANGELOG,
+  SCHEMA_MIGRATION_GUIDE.
+- **Why:** Console-parity rename for MCP agents (Suchok product→category).
+- **Affected:** `src/index.ts`, package docs. MCP never publishes — user
+  Publishes in Console. Requires engine rename DDL (not drop+create).
+
+---
+
 ## 2026-07-22 — v1.5.1 deep nested projectModelsInfo
 
 - **Changed:** Nested `sub_field_info` depth 5 + structural validation fields in GraphQL client.
