@@ -39,6 +39,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`rename_model`** — rename a model identifier via system `updateModel(type: rename, model_name, new_name)`. Stages on pro engines; MCP never publishes.
+
 ## [1.4.1] - 2026-07-13
 
 ### Added

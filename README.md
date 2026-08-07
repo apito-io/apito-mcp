@@ -209,6 +209,7 @@ On **SaaS projects**, models can be:
 - Resource: **`apito://saas-model-guide`**
 - **`create_model`** accepts `is_common_model`
 - **`update_model`** toggles `is_common_model` on existing models (metadata-only, immediate on pro)
+- **`rename_model`** renames a model identifier via `updateModel(type: rename)` (stages on pro; publish in Console)
 - **`list_models`** shows scope per model (`common`, `tenant-scoped`, `tenant catalogue`)
 
 Call **`get_project_context`** first on SaaS projects, then **`get_saas_model_guide`** before creating models.
@@ -289,6 +290,17 @@ Update model metadata (not fields).
 - `single_page_model` (optional): Single-record settings model
 
 At least one of `is_common_model` or `single_page_model` is required.
+
+### `rename_model`
+
+Rename a model's canonical identifier (e.g. `product` → `category`). Uses system `updateModel(type: rename, model_name, new_name)`.
+
+**Arguments:**
+
+- `model_name` (required): Current model name
+- `new_name` (required): New model name (prefer snake_case singular: `category`, `variant`)
+
+On pro engines this **stages** a draft `rename_model` op — MCP never publishes. After the user Publishes in Console → Schema Changes, regenerate app codegen and update resource strings. Does not rewrite application code.
 
 ### `get_schema_migration_guide`
 

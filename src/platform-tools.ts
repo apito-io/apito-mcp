@@ -355,7 +355,8 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   },
   {
     name: 'get_auth_settings',
-    description: '[core] Read project authentication settings (Google, local auth).',
+    description:
+      '[core] Read project authentication settings (general + Google/Facebook/GitHub/X/LinkedIn OAuth).',
     inputSchema: {
       type: 'object',
       properties: { project_id: PROJECT_ID_PARAM },
@@ -363,7 +364,8 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   },
   {
     name: 'update_auth_settings',
-    description: '[core] Update project authentication settings.',
+    description:
+      '[core] Update project authentication settings (UpdateProjectAuthenticationInput; flat per-provider fields).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -758,6 +760,111 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'get_saas_auth_guide',
     description: '[pro] SaaS app user auth guide (local + Google login, tenant_id, token handling).',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  // --- System logs [pro] — system-scoped read (no write lease) ---
+  {
+    name: 'search_system_logs',
+    proOnly: true,
+    description:
+      '[pro] Search structured system logs (searchSystemLogs). System-scoped read — project_id optional filter only. Max 50 rows; large text fields truncated.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: {
+          type: 'string',
+          description: 'Optional filter — not required for system-scoped read.',
+        },
+        tenant_id: TENANT_ID_PARAM,
+        trace_id: { type: 'string' },
+        request_id: { type: 'string' },
+        scope_key: { type: 'string' },
+        user_id: { type: 'string' },
+        role_id: { type: 'string' },
+        sources: { type: 'array', items: { type: 'string' } },
+        kinds: { type: 'array', items: { type: 'string' } },
+        levels: { type: 'array', items: { type: 'string' } },
+        statuses: { type: 'array', items: { type: 'string' } },
+        environment: { type: 'string' },
+        method: { type: 'string' },
+        status_code: { type: 'number' },
+        model: { type: 'string' },
+        driver_engine: { type: 'string' },
+        nats_subject: { type: 'string' },
+        from_ns: { type: 'string', description: 'Start of time window (nanoseconds since epoch)' },
+        to_ns: { type: 'string', description: 'End of time window (nanoseconds since epoch)' },
+        min_duration_us: { type: 'number' },
+        text: { type: 'string', description: 'Full-text search against FTS index' },
+        cursor: { type: 'string', description: 'Opaque pagination cursor from prior search' },
+        limit: { type: 'number', description: 'Page size (max 50)' },
+        ascending: { type: 'boolean', description: 'Sort oldest→newest when true' },
+      },
+    },
+  },
+  {
+    name: 'get_system_log',
+    proOnly: true,
+    description:
+      '[pro] Fetch one log event by id (systemLog). System-scoped read. Payload fields truncated to 4 KiB each.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Log event id' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get_system_trace',
+    proOnly: true,
+    description:
+      '[pro] Fetch events sharing a trace_id (systemLogTrace). System-scoped read. Max 50 rows.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        trace_id: { type: 'string' },
+      },
+      required: ['trace_id'],
+    },
+  },
+  {
+    name: 'summarize_system_logs',
+    proOnly: true,
+    description:
+      '[pro] Aggregate log counts (systemLogStats aggregates). System-scoped read. Use group_by (source, kind, level, status, project_id, tenant_id, model, status_code) or interval_s for time buckets. Max 50 buckets.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_id: {
+          type: 'string',
+          description: 'Optional filter — not required for system-scoped read.',
+        },
+        tenant_id: TENANT_ID_PARAM,
+        trace_id: { type: 'string' },
+        sources: { type: 'array', items: { type: 'string' } },
+        kinds: { type: 'array', items: { type: 'string' } },
+        levels: { type: 'array', items: { type: 'string' } },
+        statuses: { type: 'array', items: { type: 'string' } },
+        from_ns: { type: 'string' },
+        to_ns: { type: 'string' },
+        text: { type: 'string' },
+        group_by: {
+          type: 'string',
+          description:
+            'Group dimension: source, kind, level, status, project_id, tenant_id, model, status_code',
+        },
+        interval_s: {
+          type: 'number',
+          description: 'When > 0, bucket by time interval (seconds) instead of group_by',
+        },
+      },
+    },
+  },
+  {
+    name: 'get_log_store_health',
+    proOnly: true,
+    description:
+      '[pro] Log store health and counters snapshot (systemLogStats health/store). System-scoped read.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];

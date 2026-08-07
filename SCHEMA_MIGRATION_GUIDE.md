@@ -227,7 +227,7 @@ One `add_relation` = bidirectional edge. **One** `delete_relation` removes both 
 |-------|-------|
 | Start | `get_schema_migration_guide`, `get_project_context`, `get_schema_versioning_status`, `get_saas_model_guide` |
 | Discover | `list_models`, `get_relation_graph`, `get_schema_preview(source: live)` |
-| Mutate | `create_model`, `add_field`, `update_field`, `delete_field`, `add_relation` — **sequential** |
+| Mutate | `create_model`, `add_field`, `update_field`, `rename_field`, `rename_model`, `delete_field`, `add_relation` — **sequential** |
 | Verify | `get_schema_preview`, `get_effective_schema`, `get_schema_change_plan` |
 | Handoff | `summarize_schema_draft_for_review` → user publishes in Console |
 | Post-publish | `get_schema_preview(source: live)`, `get_schema_versioning_status` |

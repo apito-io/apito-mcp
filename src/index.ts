@@ -406,7 +406,8 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                 },
                 {
                     name: 'update_field',
-                    description: 'Update an existing field in a model',
+                    description:
+                        'Update an existing field in a model. For nested fields under object/repeated, pass parent_field (immediate parent identifier). For dropdowns, pass field_type=list, field_sub_type=dropdown, and validation.fixed_list_elements.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -429,6 +430,16 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                             input_type: {
                                 type: 'string',
                                 description: 'New input type',
+                            },
+                            field_sub_type: {
+                                type: 'string',
+                                description:
+                                    'Field sub type for list fields: dropdown, multiSelect, or dynamicList',
+                            },
+                            parent_field: {
+                                type: 'string',
+                                description:
+                                    'Immediate parent identifier when updating a nested field under object or repeated',
                             },
                             field_description: {
                                 type: 'string',
@@ -524,6 +535,26 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                             },
                         },
                         required: ['model_name'],
+                    },
+                },
+                {
+                    name: 'rename_model',
+                    description:
+                        'Rename a model identifier (e.g. product → category). Uses system `updateModel(type: rename, model_name, new_name)`. On pro engines this **stages** a `rename_model` draft op — MCP never publishes; user must Publish in Console → Schema Changes. Prefer snake_case singular names (`category`, `variant`). After publish: regenerate app codegen (`pnpm codegen:apito`) and update resource strings. Does not migrate app code.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Current canonical model name (e.g. product, tag)',
+                            },
+                            new_name: {
+                                type: 'string',
+                                description:
+                                    'New canonical model name (snake_case singular preferred, e.g. category, variant)',
+                            },
+                        },
+                        required: ['model_name', 'new_name'],
                     },
                 },
                 {
@@ -909,7 +940,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                     if (scope) {
                         scopedArgs.project_id = scope.projectId;
                         if (scope.tenantId) scopedArgs.tenant_id = scope.tenantId;
-                    } else if (metadata.access !== 'unscoped') {
+                    } else if (metadata.access !== 'unscoped' && metadata.projectRequired) {
                         throw new Error(`Could not resolve project scope for ${name}`);
                     }
                     const scopedServer = new ApitoMCPServer(
@@ -964,6 +995,8 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                         return await this.handleDeleteModel(args as any);
                     case 'update_model':
                         return await this.handleUpdateModel(args as any);
+                    case 'rename_model':
+                        return await this.handleRenameModel(args as any);
                     case 'list_models':
                         return await this.handleListModels(args as any);
                     case 'get_model_schema':
@@ -1313,6 +1346,47 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
         };
     }
 
+    private async handleRenameModel(args: {
+        model_name: string;
+        new_name: string;
+    }) {
+        const current = args.model_name?.trim();
+        const next = args.new_name?.trim();
+        if (!current) {
+            throw new Error('rename_model requires model_name');
+        }
+        if (!next) {
+            throw new Error('rename_model requires new_name');
+        }
+        if (current === next) {
+            throw new Error(
+                `rename_model: model_name and new_name are identical ("${current}")`
+            );
+        }
+
+        const model = await this.client!.updateModel('rename', current, {
+            newName: next,
+        });
+
+        const text = await this.formatStagingMutationResponse(
+            `rename model "${current}" → "${next}"`,
+            model
+        );
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text:
+                        `Renamed model **${current}** → **${next}**.\n\n` +
+                        `After publish: app GraphQL lists become \`${next}List\` / mutations on \`${next}\`; ` +
+                        `regenerate codegen and update resource strings (do not leave old model names in app code).\n\n` +
+                        text,
+                },
+            ],
+        };
+    }
+
     private async handleAddField(args: {
         model_name: string;
         field_label: string;
@@ -1406,6 +1480,8 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
         field_label: string;
         field_type?: string;
         input_type?: string;
+        field_sub_type?: string;
+        parent_field?: string;
         field_description?: string;
         validation?: ValidationInput;
     }) {
@@ -1416,6 +1492,8 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
             args.input_type || 'string',
             {
                 isUpdate: true,
+                fieldSubType: args.field_sub_type,
+                parentField: args.parent_field,
                 fieldDescription: args.field_description,
                 validation: args.validation,
             }
@@ -2341,7 +2419,7 @@ Pro Apito projects use **schema versioning**: system GraphQL mutations **stage**
 
 1. Call \`get_schema_migration_guide\` before bulk schema / migration work.
 2. Call \`get_schema_versioning_status\` at the start of schema work.
-2. Use \`create_model\`, \`add_field\`, \`add_relation\`, etc. — these stage draft operations on pro engines.
+2. Use \`create_model\`, \`add_field\`, \`rename_model\`, \`add_relation\`, etc. — these stage draft operations on pro engines.
 3. Verify with \`get_effective_schema\` or \`get_schema_preview(source: "draft")\`.
 4. Review the publish plan with \`get_schema_change_plan\`.
 5. End sessions with \`summarize_schema_draft_for_review\`.

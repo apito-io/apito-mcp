@@ -5,6 +5,7 @@ import * as projectAdmin from './graphql/project-admin.js';
 import * as integrations from './graphql/integrations.js';
 import * as functions from './graphql/functions.js';
 import * as dataPlane from './graphql/data-plane.js';
+import * as systemLogs from './graphql/system-logs.js';
 import { getSaasAuthGuideContent } from './guides/saas-auth-guide.js';
 
 function textResult(data: unknown, prefix?: string): { content: { type: 'text'; text: string }[] } {
@@ -594,6 +595,70 @@ export async function handlePlatformTool(
       );
     case 'get_saas_auth_guide':
       return textResult(getSaasAuthGuideContent());
+    case 'search_system_logs':
+      return textResult(
+        await systemLogs.searchSystemLogs(
+          client,
+          {
+            trace_id: args.trace_id != null ? String(args.trace_id) : undefined,
+            request_id: args.request_id != null ? String(args.request_id) : undefined,
+            project_id: args.project_id != null ? String(args.project_id) : undefined,
+            tenant_id: args.tenant_id != null ? String(args.tenant_id) : undefined,
+            scope_key: args.scope_key != null ? String(args.scope_key) : undefined,
+            user_id: args.user_id != null ? String(args.user_id) : undefined,
+            role_id: args.role_id != null ? String(args.role_id) : undefined,
+            sources: args.sources as string[] | undefined,
+            kinds: args.kinds as string[] | undefined,
+            levels: args.levels as string[] | undefined,
+            statuses: args.statuses as string[] | undefined,
+            environment: args.environment != null ? String(args.environment) : undefined,
+            method: args.method != null ? String(args.method) : undefined,
+            status_code:
+              args.status_code != null ? Number(args.status_code) : undefined,
+            model: args.model != null ? String(args.model) : undefined,
+            driver_engine: args.driver_engine != null ? String(args.driver_engine) : undefined,
+            nats_subject: args.nats_subject != null ? String(args.nats_subject) : undefined,
+            from_ns: args.from_ns != null ? String(args.from_ns) : undefined,
+            to_ns: args.to_ns != null ? String(args.to_ns) : undefined,
+            min_duration_us:
+              args.min_duration_us != null ? Number(args.min_duration_us) : undefined,
+            text: args.text != null ? String(args.text) : undefined,
+            cursor: args.cursor != null ? String(args.cursor) : undefined,
+            limit: args.limit as number | undefined,
+            ascending: args.ascending as boolean | undefined,
+          },
+          ro
+        )
+      );
+    case 'get_system_log':
+      return textResult(await systemLogs.getSystemLog(client, String(args.id), ro));
+    case 'get_system_trace':
+      return textResult(
+        await systemLogs.getSystemTrace(client, String(args.trace_id), ro)
+      );
+    case 'summarize_system_logs':
+      return textResult(
+        await systemLogs.summarizeSystemLogs(
+          client,
+          {
+            trace_id: args.trace_id != null ? String(args.trace_id) : undefined,
+            project_id: args.project_id != null ? String(args.project_id) : undefined,
+            tenant_id: args.tenant_id != null ? String(args.tenant_id) : undefined,
+            sources: args.sources as string[] | undefined,
+            kinds: args.kinds as string[] | undefined,
+            levels: args.levels as string[] | undefined,
+            statuses: args.statuses as string[] | undefined,
+            from_ns: args.from_ns != null ? String(args.from_ns) : undefined,
+            to_ns: args.to_ns != null ? String(args.to_ns) : undefined,
+            text: args.text != null ? String(args.text) : undefined,
+            group_by: args.group_by != null ? String(args.group_by) : undefined,
+            interval_s: args.interval_s != null ? Number(args.interval_s) : undefined,
+          },
+          ro
+        )
+      );
+    case 'get_log_store_health':
+      return textResult(await systemLogs.getLogStoreHealth(client, ro));
 
     default:
       throw new Error(`Unknown platform tool: ${name}`);
@@ -661,4 +726,9 @@ export const PLATFORM_TOOL_NAMES = new Set([
   'list_document_revisions',
   'reorder_fields',
   'get_saas_auth_guide',
+  'search_system_logs',
+  'get_system_log',
+  'get_system_trace',
+  'summarize_system_logs',
+  'get_log_store_health',
 ]);

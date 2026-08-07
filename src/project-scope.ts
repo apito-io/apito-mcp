@@ -66,6 +66,13 @@ const UNSCOPED_TOOLS = new Set([
   'get_saas_auth_guide',
   'get_field_design_guide',
 ]);
+const SYSTEM_SCOPED_READ_TOOLS = new Set([
+  'search_system_logs',
+  'get_system_log',
+  'get_system_trace',
+  'summarize_system_logs',
+  'get_log_store_health',
+]);
 
 function cleanString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -133,6 +140,9 @@ export function projectScopeConfigFromEnv(
 export function getToolAccessMetadata(name: string): ToolAccessMetadata {
   if (UNSCOPED_TOOLS.has(name)) {
     return { access: 'unscoped', projectRequired: false, secret: false };
+  }
+  if (SYSTEM_SCOPED_READ_TOOLS.has(name)) {
+    return { access: 'read', projectRequired: false, secret: false };
   }
   const destructive = DESTRUCTIVE_PREFIXES.some((prefix) => name.startsWith(prefix));
   const read = READ_TOOLS.has(name) || READ_PREFIXES.some((prefix) => name.startsWith(prefix));
@@ -320,12 +330,21 @@ export class ProjectScopeManager {
     const metadata = getToolAccessMetadata(toolName);
     if (metadata.access === 'unscoped') return undefined;
     const projectId = cleanString(input.project_id) ?? (
-      metadata.access === 'read' ? this.config.defaultProjectId : undefined
+      metadata.access === 'read' && metadata.projectRequired
+        ? this.config.defaultProjectId
+        : undefined
     );
+    const tenantId = cleanString(input.tenant_id);
+    if (!metadata.projectRequired) {
+      if (projectId) {
+        this.assertAllowed(projectId, tenantId);
+        return { projectId, tenantId };
+      }
+      return undefined;
+    }
     if (!projectId) {
       throw new Error(`${toolName} requires project_id (no APITO_DEFAULT_PROJECT_ID configured)`);
     }
-    const tenantId = cleanString(input.tenant_id);
     this.assertAllowed(projectId, tenantId);
     if (metadata.access === 'read') return { projectId, tenantId };
     const scopeLease = cleanString(input.scope_lease);
