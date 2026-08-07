@@ -39,9 +39,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-07
+
 ### Added
 
 - **`rename_model`** — rename a model identifier via system `updateModel(type: rename, model_name, new_name)`. Stages on pro engines; MCP never publishes.
+- **`search_system_logs`** / **`summarize_system_logs`** — pro system-scoped log search (max 50 rows; large fields truncated).
+- GraphQL helper `src/graphql/system-logs.ts` + `test:system-logs` script.
 
 ## [1.4.1] - 2026-07-13
 
