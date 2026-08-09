@@ -32,6 +32,12 @@ import {
     projectScopeConfigFromEnv,
     type ProjectScopeConfig,
 } from './project-scope.js';
+import {
+    buildPublicGraphqlModelMap,
+    rootOperationsForModel,
+    type PublicGraphqlModelMap,
+} from './apito-naming.js';
+import { executeProbePublicDocument } from './public-graphql.js';
 
 const SOURCE_PARAM_SCHEMA = {
     type: 'string',
@@ -711,10 +717,70 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                 {
                     name: 'get_project_query_structure',
                     description:
-                        "Get the Apito project GraphQL query structure: which operations exist for each model. For model 'Task' you get task(_id), taskList, taskListCount, createTask, updateTask, deleteTask, upsertTaskList. CamelCase matters. To filter lists by related models (has_one, has_many, M:N), use the `relation` arg on *List — e.g. studentList(relation: { class: { _id: { eq: '…' } } }); do not use `connection` for that. Full rules: get_project_query_guide / apito://project-query-guide. For field selections (object vs repeated vs relation), get_field_design_guide.",
+                        "Get **root** public GraphQL operations only (camelCase: orderList, createOrder). Nested selection/connect keys are snake (`ledger_list`, `customer_id`) — call get_public_graphql_model_map for those. Do not treat ledgerList as a nested field. Relation list filters: studentList(relation: { class: { _id: { eq: '…' } } }). Guides: get_project_query_guide / get_field_design_guide.",
                     inputSchema: {
                         type: 'object',
                         properties: {},
+                    },
+                },
+                {
+                    name: 'get_public_graphql_model_map',
+                    description:
+                        'Public GraphQL field map for a model (or all models): root camel ops + nested snake selection_key / connect_key / filter_key from connections. Use instead of parsing introspection JSON. Published/live or effective schema via source. After this, probe_public_document to hydrate a live doc; app UI gaps after that are codegen/connectionFields (outside MCP).',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Optional model name. Omit to map all models.',
+                            },
+                            source: SOURCE_PARAM_SCHEMA,
+                            note_missing_peers: {
+                                type: 'boolean',
+                                description:
+                                    'If true and model_name is set, list other models with no edge (noisy on large schemas). Default false.',
+                            },
+                        },
+                    },
+                },
+                {
+                    name: 'probe_public_document',
+                    description:
+                        'One-shot public `/secured/graphql` hydrate: build selection from get_public_graphql_model_map, fetch document by id with nested relations, return query + data/errors + selected-vs-null relation report. Live published schema only. No write. Auth failures surface clearly (apt_ may lack public data caps — use inspect_access_token). Never falls back to flat get_data.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: { type: 'string', description: 'Model name (e.g. order)' },
+                            id: { type: 'string', description: 'Document _id' },
+                            relations: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description:
+                                    'Optional selection keys from the model map (e.g. customer, ledger_list). Default = all forward relations.',
+                            },
+                            tenant_id: {
+                                type: 'string',
+                                description: 'Optional X-Apito-Tenant-ID for SaaS public GraphQL',
+                            },
+                        },
+                        required: ['model_name', 'id'],
+                    },
+                },
+                {
+                    name: 'inspect_access_token',
+                    description:
+                        'Inspect the MCP-configured access token (`apt_`) via GET /system/access-tokens/me. Returns preset, capabilities, project/tenant grants, expiry — never the secret. Never accepts a pasted token. Use when CAPABILITY_DENIED or wrong project/tenant scope. Optional operation → required-cap hint; optional project_id/tenant_id → grant check.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            operation: {
+                                type: 'string',
+                                description:
+                                    'Logical operation from DefaultOperationBindings (e.g. queryDocuments, listModels)',
+                            },
+                            project_id: { type: 'string' },
+                            tenant_id: { type: 'string' },
+                        },
                     },
                 },
                 {
@@ -1009,6 +1075,12 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                         return await this.handleGetRelationGraph(args as any);
                     case 'get_project_query_structure':
                         return await this.handleGetProjectQueryStructure();
+                    case 'get_public_graphql_model_map':
+                        return await this.handleGetPublicGraphqlModelMap(args as any);
+                    case 'probe_public_document':
+                        return await this.handleProbePublicDocument(args as any);
+                    case 'inspect_access_token':
+                        return await this.handleInspectAccessToken(args as any);
                     case 'get_field_design_guide':
                         return await this.handleGetFieldDesignGuide();
                     case 'add_relation':
@@ -1696,32 +1768,158 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
     private async handleGetProjectQueryStructure() {
         const { models } = await this.getSchemaContext().resolveModels('live');
         const mapping = models.map((m) => {
-            const singular = this.modelNameToCamelCase(m.name);
+            const ops = rootOperationsForModel(m.name);
             return {
                 model: m.name,
-                singular: `${singular}(_id)`,
-                list: `${singular}List`,
-                count: `${singular}ListCount`,
-                create: `create${m.name}`,
-                update: `update${m.name}`,
-                delete: `delete${m.name}`,
-                upsert: `upsert${m.name}List`,
+                singular: `${ops.get_one}(_id)`,
+                list: ops.list,
+                count: ops.count,
+                create: ops.create,
+                update: ops.update,
+                delete: ops.delete,
+                upsert: ops.upsert_list,
             };
         });
 
-        const text = `# Apito Project Query Structure\n\n` +
-            `For each model, these GraphQL operations exist. **CamelCase matters.**\n\n` +
+        const text =
+            `# Apito Project Query Structure (roots only)\n\n` +
+            `For each model, these **root** GraphQL operations exist. **CamelCase matters.**\n\n` +
+            `For **nested** selection keys (\`customer\`, \`ledger_list\`) and connect keys (\`customer_id\`), call **\`get_public_graphql_model_map\`** — do not treat \`ledgerList\` as a nested field.\n\n` +
             `| Model | Get by ID | List | Count | Create | Update | Delete | Upsert |\n` +
             `|-------|-----------|------|-------|--------|--------|--------|--------|\n` +
-            mapping.map((r) => `| ${r.model} | ${r.singular} | ${r.list} | ${r.count} | ${r.create} | ${r.update} | ${r.delete} | ${r.upsert} |`).join('\n') +
-            `\n\nExample for Task: \`task(_id: "…")\`, \`taskList\`, \`createTask\`, \`updateTask\`, \`deleteTask\`, \`upsertTaskList\`\n\n` +
-            `**Note:** Public project GraphQL reflects **published (live)** schema only. Draft-only models from MCP staging appear here only after Console publish.\n\n` +
-            `Use resource \`apito://project-query-guide\` for full guide.\n\n` +
-            `**Nested field selections:** tool \`get_field_design_guide\` or resource \`apito://field-design-guide\` — object/repeated fields are not second documents; do not add an inner \`data { }\` around them.`;
+            mapping
+                .map(
+                    (r) =>
+                        `| ${r.model} | ${r.singular} | ${r.list} | ${r.count} | ${r.create} | ${r.update} | ${r.delete} | ${r.upsert} |`
+                )
+                .join('\n') +
+            `\n\nExample for Task: \`task(_id: "…")\`, \`taskList\`, \`createTask\`, …\n\n` +
+            `**Note:** Public project GraphQL reflects **published (live)** schema only.\n\n` +
+            `Debug hydrate: \`probe_public_document\`. Access token: \`inspect_access_token\`.`;
 
         return {
             content: [{ type: 'text' as const, text }],
         };
+    }
+
+    private async handleGetPublicGraphqlModelMap(args: {
+        model_name?: string;
+        source?: string;
+        note_missing_peers?: boolean;
+    }) {
+        const source = await this.resolveSchemaSource(args?.source);
+        const { models, sourceUsed } = await this.getSchemaContext().resolveModels(source);
+        const allNames = models.map((m) => m.name);
+        const filterName = args?.model_name?.trim();
+        const selected = filterName
+            ? models.filter((m) => m.name.toLowerCase() === filterName.toLowerCase())
+            : models;
+        if (filterName && selected.length === 0) {
+            throw new Error(`Model "${filterName}" not found (source: ${sourceUsed})`);
+        }
+        const maps: PublicGraphqlModelMap[] = selected.map((m) =>
+            buildPublicGraphqlModelMap(
+                m,
+                args?.note_missing_peers && filterName ? allNames : []
+            )
+        );
+        const summaryLines = maps.map((map) => {
+            const rels = map.relations
+                .map((r) => `${r.selection_key}→${r.peer_model}`)
+                .join(', ');
+            return `- **${map.model}**: roots \`${map.root_operations.list}\` / \`${map.root_operations.create}\`; relations: ${rels || '(none)'}`;
+        });
+        const md =
+            `# Public GraphQL model map (source: ${sourceUsed})\n\n` +
+            summaryLines.join('\n') +
+            `\n\n\`\`\`json\n${JSON.stringify(filterName ? maps[0] : maps, null, 2)}\n\`\`\``;
+        return { content: [{ type: 'text' as const, text: md }] };
+    }
+
+    private async handleProbePublicDocument(args: {
+        model_name: string;
+        id: string;
+        relations?: string[];
+        tenant_id?: string;
+        project_id?: string;
+    }) {
+        const modelName = args.model_name?.trim();
+        const id = args.id?.trim();
+        if (!modelName || !id) throw new Error('probe_public_document requires model_name and id');
+        await this.getSchemaContext().assertModelPublished(modelName);
+        const { models } = await this.getSchemaContext().resolveModels('live');
+        const model = models.find((m) => m.name.toLowerCase() === modelName.toLowerCase());
+        if (!model) throw new Error(`Model "${modelName}" not found in live schema`);
+        const modelMap = buildPublicGraphqlModelMap(model);
+        const peerDataFields: Record<string, string[]> = {};
+        for (const rel of modelMap.relations) {
+            const peer = models.find(
+                (m) => m.name.toLowerCase() === rel.peer_model.toLowerCase()
+            );
+            if (peer) {
+                peerDataFields[rel.peer_model] = buildPublicGraphqlModelMap(peer).data_fields;
+            }
+        }
+        const result = await executeProbePublicDocument(this.client!, {
+            modelMap,
+            id,
+            relations: args.relations,
+            peerDataFields,
+            projectId: args.project_id,
+            tenantId: args.tenant_id,
+        });
+        const md =
+            `# Probe public document\n\n` +
+            `Endpoint: \`${result.endpoint}\`\n\n` +
+            `## Relation report\n` +
+            result.relation_report
+                .map((r) => `- \`${r.selection_key}\`: **${r.status}**${r.detail ? ` (${r.detail})` : ''}`)
+                .join('\n') +
+            `\n\n## Query\n\`\`\`graphql\n${result.query}\n\`\`\`\n\n` +
+            `## Response\n\`\`\`json\n${JSON.stringify({ data: result.data, errors: result.errors }, null, 2)}\n\`\`\``;
+        return { content: [{ type: 'text' as const, text: md }] };
+    }
+
+    private async handleInspectAccessToken(args: {
+        operation?: string;
+        project_id?: string;
+        tenant_id?: string;
+    }) {
+        if (!this.authToken.startsWith('apt_')) {
+            throw new Error(
+                'inspect_access_token requires an apt_ Bearer configured on MCP (not ak_ / session cookie)'
+            );
+        }
+        const body = await this.client!.inspectAccessTokenMe({
+            operation: typeof args?.operation === 'string' ? args.operation : undefined,
+            projectId: typeof args?.project_id === 'string' ? args.project_id : undefined,
+            tenantId: typeof args?.tenant_id === 'string' ? args.tenant_id : undefined,
+        });
+        // Never echo configured secret — only engine public projection.
+        const token = (body.token ?? {}) as Record<string, unknown>;
+        const caps = Array.isArray(token.capabilities)
+            ? (token.capabilities as string[])
+            : [];
+        const md =
+            `# Access token (self)\n\n` +
+            `- **id**: \`${token.id ?? '?'}\`\n` +
+            `- **prefix**: \`${token.secret_prefix ?? '?'}\`\n` +
+            `- **name**: ${token.name ?? '(none)'}\n` +
+            `- **preset**: \`${token.preset ?? '?'}\`\n` +
+            `- **status**: \`${token.status ?? '?'}\`\n` +
+            `- **expires_at**: ${token.expires_at ?? '(none)'}\n` +
+            `- **project_grant_mode**: \`${token.project_grant_mode ?? '?'}\`\n` +
+            `- **project_ids**: ${(token.project_ids as string[] | undefined)?.join(', ') || '(all_admin or empty)'}\n` +
+            `- **tenant_grant_mode**: \`${token.tenant_grant_mode ?? '?'}\`\n` +
+            `- **capabilities** (${caps.length}): ${caps.join(', ') || '(none)'}\n\n` +
+            (body.operation_hint
+                ? `## Operation hint\n\`\`\`json\n${JSON.stringify(body.operation_hint, null, 2)}\n\`\`\`\n\n`
+                : '') +
+            (body.grant_check
+                ? `## Grant check\n\`\`\`json\n${JSON.stringify(body.grant_check, null, 2)}\n\`\`\`\n\n`
+                : '') +
+            `Secret is never returned. On CAPABILITY_DENIED: confirm caps above, then regenerate the token in Console → Access Token if missing.`;
+        return { content: [{ type: 'text' as const, text: md }] };
     }
 
     private async handleGetFieldDesignGuide() {

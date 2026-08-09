@@ -70,6 +70,12 @@ function testConfiguration(): void {
   });
   assert(config.allowedProjectIds.size === 2, 'project allowlist parses exactly');
   assert(config.defaultProjectId === 'project-a', 'default project parses');
+  assert(config.ttlMs === 2000, 'custom TTL parses');
+
+  const defaultTtl = projectScopeConfigFromEnv({
+    APITO_ALLOWED_PROJECT_IDS: 'project-a',
+  });
+  assert(defaultTtl.ttlMs === 1_800_000, 'default TTL is 1800 seconds');
 
   // Worker binds request project via copy, not mutation of env-derived config.
   const bound = { ...config, defaultProjectId: 'project-b' };
@@ -100,6 +106,21 @@ function testLeasesAndReads(): void {
     preparation_id: prepared.preparation_id,
   });
   const lease = String(confirmed.scope_lease);
+  assert(confirmed.sticky_lease === true, 'confirm enables sticky lease');
+
+  // Sticky lease allows omit scope_lease for same project/tenant.
+  const stickyWrite = manager.resolve('upsert_data', { project_id: 'project-a' });
+  assert(stickyWrite?.projectId === 'project-a', 'sticky lease satisfies write without scope_lease');
+
+  const inspected = manager.inspect();
+  assert(
+    (inspected.sticky_lease as { present?: boolean })?.present === true,
+    'inspect shows sticky lease present without token'
+  );
+  assert(
+    !JSON.stringify(inspected).includes(lease),
+    'inspect never echoes scope_lease token'
+  );
 
   const a = manager.resolve('upsert_data', {
     project_id: 'project-a',
@@ -130,12 +151,16 @@ function testLeasesAndReads(): void {
   assert(destructive?.projectId === 'project-a', 'destructive confirmation resolves');
 
   const readA = manager.resolve('get_data', { project_id: 'project-a' });
-  const readB = manager.resolve('get_data', { project_id: 'project-b' });
   assert(readA?.projectId === 'project-a', 'first read stays in project A');
-  assert(readB?.projectId === 'project-b', 'second read independently scopes project B');
   assert(
     manager.resolve('get_data', {})?.projectId === 'project-a',
-    'read uses explicitly configured default'
+    'read uses sticky default from last scoped read (or env)'
+  );
+  const readB = manager.resolve('get_data', { project_id: 'project-b' });
+  assert(readB?.projectId === 'project-b', 'second read independently scopes project B');
+  assert(
+    manager.resolve('get_data', {})?.projectId === 'project-b',
+    'sticky default follows last successful scoped project'
   );
 
   now += 1_001;
@@ -160,10 +185,17 @@ function testToolSchemasAndMetadata(): void {
   const destructiveSchema = applyProjectScopeSchema(destructive).inputSchema;
   assert(writeSchema.properties?.project_id, 'write exposes project_id');
   assert(writeSchema.properties?.scope_lease, 'write exposes scope_lease');
+  assert(
+    !(writeSchema.required as string[] | undefined)?.includes('scope_lease'),
+    'scope_lease is optional when sticky lease may apply'
+  );
   assert(readSchema.properties?.project_id, 'read exposes project_id');
   assert(!readSchema.properties?.scope_lease, 'read does not require a lease');
   assert(destructiveSchema.properties?.confirm_destructive, 'destructive exposes confirmation');
   assert(getToolAccessMetadata('execute_function').secret, 'secret metadata is authoritative');
+  assert(getToolAccessMetadata('inspect_access_token').access === 'unscoped', 'inspect is unscoped');
+  assert(getToolAccessMetadata('probe_public_document').access === 'read', 'probe is read');
+  assert(getToolAccessMetadata('get_public_graphql_model_map').access === 'read', 'map is read');
 }
 
 async function testPublishedToolSchemas(): Promise<void> {

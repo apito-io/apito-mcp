@@ -37,11 +37,19 @@ type Lease = Preparation & {
   createdAt: number;
 };
 
-const READ_PREFIXES = ['get_', 'list_', 'search_', 'summarize_'];
+type StickyLease = {
+  projectId: string;
+  tenantId?: string;
+  scopeLease: string;
+  expiresAt: number;
+};
+
+const READ_PREFIXES = ['get_', 'list_', 'search_', 'summarize_', 'probe_'];
 const READ_TOOLS = new Set([
   'google_oauth_state',
   'login_app_user',
   'login_app_user_google',
+  'inspect_access_token',
 ]);
 const DESTRUCTIVE_PREFIXES = ['delete_', 'remove_', 'discard_', 'rollback_', 'disconnect_'];
 const SECRET_TOOLS = new Set([
@@ -65,6 +73,7 @@ const UNSCOPED_TOOLS = new Set([
   'get_saas_model_guide',
   'get_saas_auth_guide',
   'get_field_design_guide',
+  'inspect_access_token',
 ]);
 const SYSTEM_SCOPED_READ_TOOLS = new Set([
   'search_system_logs',
@@ -133,7 +142,7 @@ export function projectScopeConfigFromEnv(
     allowedProjectIds,
     defaultProjectId,
     allowedTenantsByProject,
-    ttlMs: parsePositiveSeconds(env.APITO_PROJECT_SCOPE_TTL_SECONDS, 300) * 1000,
+    ttlMs: parsePositiveSeconds(env.APITO_PROJECT_SCOPE_TTL_SECONDS, 1800) * 1000,
   };
 }
 
@@ -200,7 +209,8 @@ const PROJECT_ID_SCHEMA = {
 } as const;
 const LEASE_SCHEMA = {
   type: 'string',
-  description: 'Short-lived project-bound lease returned by confirm_project_scope.',
+  description:
+    'Short-lived project-bound lease from confirm_project_scope. Optional when a sticky lease is still valid for the same project/tenant.',
 } as const;
 
 export function applyProjectScopeSchema<T extends Tool>(tool: T): T {
@@ -219,7 +229,7 @@ export function applyProjectScopeSchema<T extends Tool>(tool: T): T {
   if (metadata.access !== 'read') {
     properties.scope_lease = LEASE_SCHEMA;
     required.add('project_id');
-    required.add('scope_lease');
+    // sticky lease may satisfy scope_lease — keep optional in schema
   }
   if (metadata.access === 'destructive') {
     properties.confirm_destructive = {
@@ -247,6 +257,8 @@ export function applyProjectScopeSchema<T extends Tool>(tool: T): T {
 export class ProjectScopeManager {
   private readonly preparations = new Map<string, Preparation>();
   private readonly leases = new Map<string, Lease>();
+  private stickyLease?: StickyLease;
+  private stickyDefaultProjectId?: string;
 
   constructor(
     readonly config: ProjectScopeConfig,
@@ -279,6 +291,29 @@ export class ProjectScopeManager {
     for (const [id, item] of this.leases) {
       if (item.expiresAt <= now) this.leases.delete(id);
     }
+    if (this.stickyLease && this.stickyLease.expiresAt <= now) {
+      this.stickyLease = undefined;
+    }
+  }
+
+  private rememberStickyDefault(projectId: string): void {
+    this.stickyDefaultProjectId = projectId;
+  }
+
+  private resolveStickyLease(
+    projectId: string,
+    tenantId?: string
+  ): string | undefined {
+    const sticky = this.stickyLease;
+    if (!sticky) return undefined;
+    if (sticky.expiresAt <= this.now()) {
+      this.stickyLease = undefined;
+      return undefined;
+    }
+    if (sticky.projectId !== projectId || sticky.tenantId !== tenantId) {
+      return undefined;
+    }
+    return sticky.scopeLease;
   }
 
   prepare(input: ProjectScopeInput): Record<string, unknown> {
@@ -287,6 +322,7 @@ export class ProjectScopeManager {
     if (!projectId) throw new Error('prepare_project_scope requires project_id');
     const tenantId = cleanString(input.tenant_id);
     this.assertAllowed(projectId, tenantId);
+    this.rememberStickyDefault(projectId);
     const preparationId = this.randomToken();
     const expiresAt = this.now() + this.config.ttlMs;
     this.preparations.set(preparationId, { projectId, tenantId, expiresAt });
@@ -317,11 +353,14 @@ export class ProjectScopeManager {
     const createdAt = this.now();
     const expiresAt = createdAt + this.config.ttlMs;
     this.leases.set(scopeLease, { projectId, tenantId, createdAt, expiresAt });
+    this.stickyLease = { projectId, tenantId, scopeLease, expiresAt };
+    this.rememberStickyDefault(projectId);
     return {
       scope_lease: scopeLease,
       project_id: projectId,
       tenant_id: tenantId,
       expires_at: new Date(expiresAt).toISOString(),
+      sticky_lease: true,
     };
   }
 
@@ -331,7 +370,7 @@ export class ProjectScopeManager {
     if (metadata.access === 'unscoped') return undefined;
     const projectId = cleanString(input.project_id) ?? (
       metadata.access === 'read' && metadata.projectRequired
-        ? this.config.defaultProjectId
+        ? (this.stickyDefaultProjectId ?? this.config.defaultProjectId)
         : undefined
     );
     const tenantId = cleanString(input.tenant_id);
@@ -343,12 +382,20 @@ export class ProjectScopeManager {
       return undefined;
     }
     if (!projectId) {
-      throw new Error(`${toolName} requires project_id (no APITO_DEFAULT_PROJECT_ID configured)`);
+      throw new Error(
+        `${toolName} requires project_id (no sticky default or APITO_DEFAULT_PROJECT_ID configured)`
+      );
     }
     this.assertAllowed(projectId, tenantId);
+    this.rememberStickyDefault(projectId);
     if (metadata.access === 'read') return { projectId, tenantId };
-    const scopeLease = cleanString(input.scope_lease);
-    if (!scopeLease) throw new Error(`${toolName} requires scope_lease`);
+    const scopeLease =
+      cleanString(input.scope_lease) ?? this.resolveStickyLease(projectId, tenantId);
+    if (!scopeLease) {
+      throw new Error(
+        `${toolName} requires scope_lease (or a valid sticky lease for the same project/tenant)`
+      );
+    }
     const lease = this.leases.get(scopeLease);
     if (!lease) throw new Error('PROJECT_SCOPE_LEASE_INVALID_OR_EXPIRED');
     if (lease.projectId !== projectId || lease.tenantId !== tenantId) {
@@ -372,10 +419,22 @@ export class ProjectScopeManager {
         created_at: new Date(lease.createdAt).toISOString(),
         expires_at: new Date(lease.expiresAt).toISOString(),
       }));
+    const sticky =
+      this.stickyLease &&
+      (!requested || this.stickyLease.projectId === requested)
+        ? {
+            present: true,
+            project_id: this.stickyLease.projectId,
+            tenant_id: this.stickyLease.tenantId,
+            expires_at: new Date(this.stickyLease.expiresAt).toISOString(),
+          }
+        : { present: false };
     return {
       allowed_project_ids: [...this.config.allowedProjectIds],
       default_project_id: this.config.defaultProjectId,
+      sticky_default_project_id: this.stickyDefaultProjectId,
       ttl_seconds: this.config.ttlMs / 1000,
+      sticky_lease: sticky,
       active_leases: activeLeases,
     };
   }

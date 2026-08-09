@@ -1,5 +1,25 @@
 # apito-mcp — AI Changelog
 
+## 2026-08-09 — v1.7.0 public GraphQL map/probe + inspect_access_token
+
+- **Changed:** Added `get_public_graphql_model_map`, `probe_public_document`,
+  sticky scope UX (TTL 1800), `inspect_access_token` (engine `/me`). Naming
+  helpers aligned with js-admin-sdk nested snake keys. Docs + tests.
+- **Why:** Agents needed public field map + live hydrate + apt_ cap/grant
+  debug without Python/introspection scripts.
+- **Affected:** `apito-naming.ts`, `public-graphql.ts`, `graphql-client.ts`,
+  `project-scope.ts`, `index.ts`, open-core token controller/router/service,
+  README/CHANGELOG, `ACCESS_TOKENS.md`, admin-sdk-consumers. Ask before commit.
+
+---
+
+## 2026-08-07 — v1.6.0 rename_model + system logs
+
+- **Changed:** `rename_model` tool; `search_system_logs` /
+  `summarize_system_logs`; `src/graphql/system-logs.ts`. Tag **v1.6.0**.
+- **Why:** Model rename staging for agents; investigate Logs Tracker from MCP.
+- **Affected:** platform-tools/handlers, index, project-scope, README.
+
 ## 2026-07-28/29 — update_field nested parent + GraphQL map plan
 
 - **Changed:** `update_field` accepts `parent_field` / `field_sub_type` for

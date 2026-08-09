@@ -1,25 +1,27 @@
 # Apito MCP Server
 
-**Version 1.3.0** — see [CHANGELOG.md](./CHANGELOG.md).
+**Version 1.7.0** — see [CHANGELOG.md](./CHANGELOG.md).
 
 A Model Context Protocol (MCP) server for [Apito](https://apito.io) - an API builder and headless CMS. This server enables LLMs like Claude to interact with Apito's system GraphQL API to create models, manage fields, and build schemas.
 
-**System vs public GraphQL:** All MCP tools in this repo call the **system** GraphQL surface (console-style operations such as `getModelData`, model and field mutations). The **public** per-project GraphQL API (e.g. `taskList` for end users) can differ in auth, SaaS tenant routing, and nested relation resolution. When debugging “works in MCP / system but not on public,” compare endpoints and credentials; do not assume identical behavior.
+**System vs public GraphQL:** Most MCP tools call the **system** GraphQL surface (console-style operations such as `getModelData`, model and field mutations). Use **`get_public_graphql_model_map`** + **`probe_public_document`** for the **public** per-project `/secured/graphql` surface (root camel ops, nested snake selection keys). When debugging “works in MCP / system but not on public,” compare endpoints and credentials; do not assume identical behavior.
 
 ## Features
 
 - **Model Management**: Create, list, query, and delete models in your Apito project
 - **Field Management**: Add, update, rename, and delete fields with explicit type specification
 - **Relation Management**: Create relations between models (has_one, has_many)
+- **Public GraphQL map + probe**: Nested snake selection/connect keys + live document hydrate on `/secured/graphql`
+- **Access token inspect**: Self-introspect configured `apt_` caps/grants via `/system/access-tokens/me`
 - **Full Field Type Support**: All Apito field types including text, multiline, number, date, boolean, media, object, repeated, list (with sub-types), and geo
 - **Resources**: Expose model schemas as MCP resources for easy access
 - **Error Handling**: Comprehensive error handling with detailed messages
 - **Cloudflare Workers**: Deploy as a remote MCP server for use with any MCP client
 - **Project-Dependent API Keys**: API keys are passed per-request, allowing different projects to use the same worker
 - **Schema versioning (pro)**: Stage schema mutations into a draft; verify via `get_effective_schema`; user publishes in Console — MCP never publishes
-- **Platform management (v1.3)**: Full project administration beyond schema — tenant catalog, app end-users, auth testing, roles/settings/API keys, webhooks/plugins/functions/media, and extended data operations (~99% Console admin via system GraphQL)
+- **Platform management**: Full project administration beyond schema — tenant catalog, app end-users, auth testing, roles/settings/API keys, webhooks/plugins/functions/media, and extended data operations
 - **Edition split**: `APITO_MCP_EDITION=open` hides pro-only tools (tenant catalog, some schema versioning extras); default is `pro`
-- **Explicit project scope**: exact allowlist, canonical `X-Apito-Project-Id`, and project-bound write leases prevent cross-project tool calls
+- **Explicit project scope**: exact allowlist, canonical `X-Apito-Project-Id`, sticky write leases, and longer default TTL
 
 ## Project scope and write leases
 
@@ -28,25 +30,53 @@ Project access is fail-closed. Configure:
 - `APITO_ALLOWED_PROJECT_IDS` — required comma-separated exact project IDs
 - `APITO_DEFAULT_PROJECT_ID` — optional read default; must be in the allowlist
 - `APITO_ALLOWED_TENANTS_BY_PROJECT` — optional JSON map of project ID to exact tenant ID arrays
-- `APITO_PROJECT_SCOPE_TTL_SECONDS` — preparation/lease TTL (default `300`)
+- `APITO_PROJECT_SCOPE_TTL_SECONDS` — preparation/lease TTL (default **`1800`**)
 
-Reads require `project_id` unless the default is configured. Writes require explicit
-`project_id` and `scope_lease`; destructive tools additionally require
-`confirm_destructive: true`. Obtain a lease with:
+Reads require `project_id` unless a sticky session default or env default is configured
+(precedence: explicit arg → sticky default from prepare/confirm/scoped read → env).
+Writes require explicit `project_id`; `scope_lease` may be omitted when an in-process
+**sticky lease** from `confirm_project_scope` is still valid for the same project/tenant.
+Destructive tools additionally require `confirm_destructive: true`. Obtain a lease with:
 
 1. `prepare_project_scope({ project_id, tenant_id? })`
 2. Explicitly verify the returned project/tenant, then call
    `confirm_project_scope({ project_id, tenant_id?, preparation_id })`
-3. Pass the returned lease only to writes for that exact project/tenant.
+3. Pass the returned lease to writes, or rely on the sticky lease for the same scope.
 
-`get_project_scope` reports the allowlist/default and active lease summaries without
-revealing lease tokens. Leases are random, short-lived, and project-bound; there is
-no mutable current-project selection.
+`get_project_scope` reports the allowlist/default, sticky lease present/expiry (never the
+lease token), and active lease summaries. Leases are random, short-lived, and project-bound.
 
 Every scoped GraphQL call sends only the canonical project header
 `X-Apito-Project-Id` plus optional `X-Apito-Tenant-ID`. No alternate project header
 spellings are recognized. `apt_` requests never send the legacy temporary tenant
 cookie.
+
+## Debugging list UI / public GraphQL gaps
+
+MCP proves the **engine public surface**. App wiring (`useTable` dropping
+`meta.connectionFields`, generated `hooks.ts`) stays **outside MCP** — grep codegen locally after:
+
+1. `get_public_graphql_model_map({ model_name })` — root camel ops + nested snake
+   `selection_key` / `connect_key` / `filter_key` (e.g. `ledger_list`, `customer_id`).
+2. `probe_public_document({ model_name, id, relations? })` — one-shot `/secured/graphql`
+   hydrate + selected-vs-null relation report.
+3. If fields exist in the map/probe but the UI is empty → inspect app codegen and
+   `connectionFields` / `useTable` (not an MCP bug).
+
+**Non-goals:** MCP does not parse app `hooks.ts`, audit Refine `meta.connectionFields`,
+or publish/approve schema.
+
+Optional: `APITO_PUBLIC_GRAPHQL_ENDPOINT` overrides the derived `/secured/graphql` URL.
+
+## Debugging access token / CAPABILITY_DENIED
+
+1. `inspect_access_token` — self-introspect the configured MCP `apt_` (preset, caps,
+   project/tenant grants, expiry). Never accepts or echoes a raw secret.
+2. Optional `operation` (e.g. `queryDocuments`) → required-capability hint.
+3. Optional `project_id` / `tenant_id` → whether current grants would authorize those headers.
+4. If a cap/grant is missing → regenerate in Console → Access Token.
+
+Requires engine `GET /system/access-tokens/me` (apt_ Bearer only).
 
 ## Platform management tools (v1.3)
 

@@ -2,35 +2,32 @@
 
 ## Branch
 
-- `master` — may be dirty with `rename_model` + `update_field` parent_field;
-  ask before commit/tag. MCP GraphQL-map plan **not** implemented yet.
+- `master` — dirty with v1.7.0 GraphQL-surface + inspect tools. Ask before
+  commit/tag. Engine open-core also has `/system/access-tokens/me`.
 
 ## Done
 
-- **2026-07-28/29:** `update_field` forwards `parent_field` /
-  `field_sub_type` so nested field updates don’t stage as root fields.
-- **2026-07-28:** `rename_model` MCP tool (stages only; Console publish)
-- Deep nested GraphQL selection for schema tooling (v1.5.1)
-- Project-scope safety + functions lifecycle (v1.5.0)
-
-## Planned
-
-- `get_public_graphql_model_map` — root camel ops + nested snake /
-  `_list` / connect keys
-- `probe_public_document` — one-shot public GraphQL hydrate check
-- Scope UX: TTL 1800, sticky lease + default project in-process
+- **2026-08-09 v1.7.0:**
+  - Naming helpers + `get_public_graphql_model_map`
+  - `probe_public_document` → `/secured/graphql`
+  - Scope sticky lease / TTL 1800 / sticky default project
+  - `inspect_access_token` + client `inspectAccessTokenMe`
+  - Tests: naming, project-scope sticky, inspect mock
+  - README debug sections; CHANGELOG 1.7.0; admin-sdk-consumers note
+- Engine: `GetAccessTokenMe` + `PublicForPrincipal` (apt_ only; no secret)
 
 ## Next
 
-- Confirm commit + version bump if shipping rename/update_field
-- Confirm implement of improve_apito_mcp_gaps plan
-- Reload Cursor MCP after pull; deploy worker if prod lags
+1. Confirm commit mcp + open-core + engine ACCESS_TOKENS.md
+2. Deploy engine then reload MCP worker
+3. Smoke: map → probe → inspect on a real project
 
 ## Do not touch
 
-- Don’t publish schema from MCP — Console only
-- Don’t add app codegen / hooks.ts parsers (explicit non-goal of v1.6 plan)
+- Don’t publish schema from MCP
+- Don’t accept pasted apt_/ak_ as inspect tool args
+- Don’t parse app hooks.ts / useTable in MCP (documented non-goal)
 
 ## Last Updated
 
-2026-07-29
+2026-08-09

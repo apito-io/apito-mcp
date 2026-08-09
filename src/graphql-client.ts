@@ -903,6 +903,83 @@ export class ApitoGraphQLClient {
   }
 
   /**
+   * Public project GraphQL endpoint (`/secured/graphql`). Override with
+   * `APITO_PUBLIC_GRAPHQL_ENDPOINT` when the system URL layout is non-standard.
+   */
+  publicGraphqlEndpoint(): string {
+    const override =
+      typeof process !== 'undefined'
+        ? process.env?.APITO_PUBLIC_GRAPHQL_ENDPOINT?.trim()
+        : undefined;
+    if (override) return override.replace(/\/+$/, '');
+    if (this.endpoint.includes('/secured/graphql')) {
+      return this.endpoint.replace(/\/+$/, '');
+    }
+    return this.endpoint
+      .replace(/\/system\/graphql\/?$/, '/secured/graphql')
+      .replace(/\/+$/, '');
+  }
+
+  /**
+   * Execute a query against **public** project GraphQL (not system).
+   * Uses the same Bearer / project / tenant headers as system calls.
+   * Does not fall back to system `getModelData` on auth failure.
+   */
+  async executePublicGraphQL<T = unknown>(
+    query: string,
+    variables?: Record<string, unknown>,
+    reqOpts?: GraphQLRequestOptions
+  ): Promise<T> {
+    const endpoint = this.publicGraphqlEndpoint();
+    const client = new GraphQLClient(endpoint, {
+      headers: this.buildHeaders(reqOpts),
+    });
+    try {
+      return await client.request<T>(query, variables);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Public GraphQL (${endpoint}): ${message}`);
+    }
+  }
+
+  /**
+   * GET `/system/access-tokens/me` — self-introspect the configured apt_ Bearer.
+   * Never returns the raw secret.
+   */
+  async inspectAccessTokenMe(opts?: {
+    operation?: string;
+    projectId?: string;
+    tenantId?: string;
+  }): Promise<Record<string, unknown>> {
+    const url = new URL(`${this.restBaseUrl()}/system/access-tokens/me`);
+    if (opts?.operation?.trim()) {
+      url.searchParams.set('operation', opts.operation.trim());
+    }
+    if (opts?.projectId?.trim()) {
+      url.searchParams.set('project_id', opts.projectId.trim());
+    }
+    if (opts?.tenantId?.trim()) {
+      url.searchParams.set('tenant_id', opts.tenantId.trim());
+    }
+    const res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: this.buildHeaders({
+        projectId: opts?.projectId,
+        tenantId: opts?.tenantId,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      const msg =
+        typeof body.message === 'string'
+          ? body.message
+          : `HTTP ${res.status} from /system/access-tokens/me`;
+      throw new Error(msg);
+    }
+    return body;
+  }
+
+  /**
    * Invoke a deployed function via the public REST callable endpoint
    * `POST {base}/function/{projectId}/{name}`. Sends `X-Fn-Hash` (the function's
    * `rest_api_secret_url_key`) and optional `X-Apito-Tenant-ID` for SaaS routing.

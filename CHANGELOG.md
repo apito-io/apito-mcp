@@ -39,6 +39,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-09
+
+### Added — Public GraphQL surface + access-token inspect
+
+- **`get_public_graphql_model_map`** — root camel ops + nested snake `selection_key` / `connect_key` / `filter_key` from schema connections (aligned with js-admin-sdk naming).
+- **`probe_public_document`** — one-shot public `/secured/graphql` hydrate with relation selected-vs-null report (no flat `get_data` fallback).
+- **`inspect_access_token`** — self-introspect configured `apt_` via engine `GET /system/access-tokens/me` (never accepts/echoes secret).
+- Naming helpers in `src/apito-naming.ts`; `src/public-graphql.ts`; client `executePublicGraphQL` / `inspectAccessTokenMe`.
+
+### Changed — Scope UX
+
+- Default `APITO_PROJECT_SCOPE_TTL_SECONDS` **300 → 1800**.
+- Sticky in-process lease after `confirm_project_scope` (writes may omit `scope_lease` when still valid for same project/tenant).
+- Sticky default `project_id` for reads (explicit arg > sticky > env).
+- `get_project_scope` reports sticky lease present/expiry (never the token).
+- `get_project_query_structure` points agents at the model map for nested keys.
+
+### Docs
+
+- README debug sections for list UI / public GraphQL and CAPABILITY_DENIED.
+- Explicit non-goals: no hooks.ts parser, no useTable audit, no publish from MCP.
+
 ## [1.6.0] - 2026-08-07
 
 ### Added
