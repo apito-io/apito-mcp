@@ -36,6 +36,17 @@ timestamp: 2026-07-11T00:00:00Z
 
 Console **Users** tab uses the same `searchUsers` API as `search_app_users`.
 
+## Tenant SaaS plans (core)
+
+Permission ceiling + quotas assigned to tenants via `plan_tier` slug. Same GraphQL as Console Plans settings.
+
+| MCP tool | Engine GraphQL | Notes |
+|----------|----------------|-------|
+| `list_plans` | `getProjectPlans` | Requires `plans.read` |
+| `upsert_plan` | `upsertPlanToProject` | Requires `plans.write`; `id` = slug (`free` / `paid` / `paid_plus` / `ultra`) |
+
+`api_permissions` intersect with the app-user role at request time. `quotas.max_records.<model>` is enforced on create.
+
 ## Parity checklist (engine release)
 
 When engine adds/changes system GraphQL ops, update:
@@ -45,4 +56,4 @@ When engine adds/changes system GraphQL ops, update:
 3. `CHANGELOG.md`, `.knowledge/features/mcp-platform-tools.md`
 4. `test-tenant-users.ts`
 
-Last Updated: 2026-07-13
+Last Updated: 2026-08-10

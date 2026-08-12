@@ -1,5 +1,15 @@
 # apito-mcp — AI Changelog
 
+## 2026-08-11 — Rosna plan upsert + release-policy seed scripts
+
+- **Changed:** Added `upsert-rosna-plans.ts`,
+  `seed-rosna-app-release-policy.ts`, `set-rosna-demo-plan-tier.ts`.
+- **Why:** Repeatable MCP/GraphQL ops for Rosna↔Protiva parity (plans +
+  `app_release_policy` rows + demo tier cycling).
+- **Affected:** `apito/apito-mcp/scripts/*`. **Ask before commit.**
+
+---
+
 ## 2026-08-09 — v1.7.0 public GraphQL map/probe + inspect_access_token
 
 - **Changed:** Added `get_public_graphql_model_map`, `probe_public_document`,

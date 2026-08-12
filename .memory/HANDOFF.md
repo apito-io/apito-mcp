@@ -2,32 +2,26 @@
 
 ## Branch
 
-- `master` — dirty with v1.7.0 GraphQL-surface + inspect tools. Ask before
-  commit/tag. Engine open-core also has `/system/access-tokens/me`.
+- `master` — dirty. Includes Rosna parity helper scripts + prior v1.7.0
+  work. **Ask before commit/tag.**
 
-## Done
+## Done (this session)
 
-- **2026-08-09 v1.7.0:**
-  - Naming helpers + `get_public_graphql_model_map`
-  - `probe_public_document` → `/secured/graphql`
-  - Scope sticky lease / TTL 1800 / sticky default project
-  - `inspect_access_token` + client `inspectAccessTokenMe`
-  - Tests: naming, project-scope sticky, inspect mock
-  - README debug sections; CHANGELOG 1.7.0; admin-sdk-consumers note
-- Engine: `GetAccessTokenMe` + `PublicForPrincipal` (apt_ only; no secret)
+- `scripts/upsert-rosna-plans.ts` — free/paid/paid_plus/ultra for
+  `rosna_v2_jpn6o` (food_order quotas; employee RO on free)
+- `scripts/seed-rosna-app-release-policy.ts` — android/ios/web seed helper
+- `scripts/set-rosna-demo-plan-tier.ts` — cycle demo tenant `plan_tier`
 
 ## Next
 
-1. Confirm commit mcp + open-core + engine ACCESS_TOKENS.md
-2. Deploy engine then reload MCP worker
-3. Smoke: map → probe → inspect on a real project
+1. User confirm → commit scripts with Rosna port (or alone)
+2. Don’t publish schema from MCP (Console only)
 
 ## Do not touch
 
 - Don’t publish schema from MCP
 - Don’t accept pasted apt_/ak_ as inspect tool args
-- Don’t parse app hooks.ts / useTable in MCP (documented non-goal)
 
 ## Last Updated
 
-2026-08-09
+2026-08-11
