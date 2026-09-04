@@ -125,6 +125,7 @@ export async function handlePlatformTool(
             name: String(args.name),
             data: args.data != null ? String(args.data) : undefined,
             domain: args.domain != null ? String(args.domain) : undefined,
+            plan_tier: args.plan_tier != null ? String(args.plan_tier) : undefined,
           },
           ro
         )
@@ -138,6 +139,7 @@ export async function handlePlatformTool(
             name: args.name != null ? String(args.name) : undefined,
             data: args.data != null ? String(args.data) : undefined,
             domain: args.domain != null ? String(args.domain) : undefined,
+            plan_tier: args.plan_tier != null ? String(args.plan_tier) : undefined,
           },
           ro
         )
@@ -308,6 +310,40 @@ export async function handlePlatformTool(
       );
     case 'delete_role':
       return textResult(await projectAdmin.deleteRole(client, String(args.role), ro));
+    case 'list_plans':
+      return textResult(await projectAdmin.listPlans(client, ro));
+    case 'upsert_plan':
+      return textResult(
+        await projectAdmin.upsertPlan(
+          client,
+          {
+            id: String(args.id),
+            name: args.name != null ? String(args.name) : undefined,
+            description: args.description != null ? String(args.description) : undefined,
+            api_permissions: args.api_permissions as Record<string, unknown> | undefined,
+            logic_executions: args.logic_executions as string[] | undefined,
+            quotas: args.quotas as Record<string, number> | undefined,
+            currency: args.currency != null ? String(args.currency) : undefined,
+            price_monthly:
+              args.price_monthly != null ? Number(args.price_monthly) : undefined,
+            play_product_id:
+              args.play_product_id != null ? String(args.play_product_id) : undefined,
+            play_base_plan_id:
+              args.play_base_plan_id != null
+                ? String(args.play_base_plan_id)
+                : undefined,
+            paddle_price_id:
+              args.paddle_price_id != null ? String(args.paddle_price_id) : undefined,
+            prices: args.prices as
+              | Array<{ currency: string; amount: number; default?: boolean }>
+              | undefined,
+            provider_products: args.provider_products as
+              | Array<{ provider: string; product_id: string; variant_id?: string }>
+              | undefined,
+          },
+          ro
+        )
+      );
     case 'get_project_settings':
       return textResult(await projectAdmin.getProjectSettings(client, ro));
     case 'update_project_settings':
@@ -690,6 +726,8 @@ export const PLATFORM_TOOL_NAMES = new Set([
   'upsert_role',
   'duplicate_role',
   'delete_role',
+  'list_plans',
+  'upsert_plan',
   'get_project_settings',
   'update_project_settings',
   'list_api_keys',

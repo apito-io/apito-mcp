@@ -52,6 +52,10 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
         name: { type: 'string', description: 'Tenant display name' },
         data: { type: 'string', description: 'Optional JSON string stored on catalog row' },
         domain: { type: 'string', description: 'Optional hostname for domain-based tenant lookup' },
+        plan_tier: {
+          type: 'string',
+          description: 'SaaS plan slug (free, paid, paid_plus, ultra)',
+        },
       },
       required: ['name'],
     },
@@ -59,7 +63,7 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   {
     name: 'update_tenant',
     proOnly: true,
-    description: '[pro] Update tenant catalog row (updateTenant).',
+    description: '[pro] Update tenant catalog row (updateTenant). Supports plan_tier.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -67,6 +71,10 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
         name: { type: 'string' },
         data: { type: 'string' },
         domain: { type: 'string' },
+        plan_tier: {
+          type: 'string',
+          description: 'SaaS plan slug (free, paid, paid_plus, ultra)',
+        },
       },
       required: ['tenant_id'],
     },
@@ -304,6 +312,61 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
       type: 'object',
       properties: { role: { type: 'string' } },
       required: ['role'],
+    },
+  },
+  {
+    name: 'list_plans',
+    description:
+      '[core] List tenant SaaS plans from project.Plans (getProjectPlans). Ceiling + quotas per plan_tier slug.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'upsert_plan',
+    description:
+      '[core] Create or update a tenant SaaS plan (upsertPlanToProject). id is the plan_tier slug. Only free is system-generated; paid/Pro and other tiers are custom. Prefer prices[] + provider_products[]; legacy currency/price_monthly/play_* still accepted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Plan slug / id (required)' },
+        name: { type: 'string' },
+        description: { type: 'string' },
+        api_permissions: {
+          type: 'object',
+          description: 'JSON map of model -> { read, create, update, delete } scopes',
+        },
+        logic_executions: { type: 'array', items: { type: 'string' } },
+        quotas: {
+          type: 'object',
+          description:
+            'JSON map e.g. max_records.student, max_app_users, storage_mb (0/missing = unlimited)',
+        },
+        currency: { type: 'string', description: 'Legacy single currency (derived from prices[])' },
+        price_monthly: { type: 'number', description: 'Legacy monthly list price' },
+        play_product_id: {
+          type: 'string',
+          description: 'Legacy Google Play product id (prefer provider_products)',
+        },
+        play_base_plan_id: {
+          type: 'string',
+          description: 'Legacy Play base plan / variant id',
+        },
+        paddle_price_id: {
+          type: 'string',
+          description: 'Legacy Paddle price id',
+        },
+        prices: {
+          type: 'array',
+          description: 'Multi-currency list prices [{ currency, amount, default? }]',
+          items: { type: 'object' },
+        },
+        provider_products: {
+          type: 'array',
+          description:
+            'Provider catalog links [{ provider, product_id, variant_id? }] — product_id is the common catalog id',
+          items: { type: 'object' },
+        },
+      },
+      required: ['id'],
     },
   },
   {

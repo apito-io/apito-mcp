@@ -7,7 +7,7 @@ export function getSchemaMigrationGuideContent(): string {
 
 **Read this before any schema migration session** — regardless of source (exported JSON, another project's preview, spreadsheet, or gap diff). MCP stages drafts; humans publish in Console.
 
-Companion: \`get_schema_versioning_status\`, \`apito://schema-versioning-guide\`, \`get_saas_model_guide\` (SaaS), \`get_field_design_guide\` (nested shapes).
+Companion: \`get_schema_versioning_status\`, \`apito://schema-versioning-guide\`, \`get_saas_model_guide\` (SaaS), \`get_field_design_guide\` (nested shapes), \`get_model_physical_health\` / \`get_project_physical_health\` (logical vs physical columns).
 
 ---
 
@@ -50,6 +50,7 @@ If \`has_draft: true\`, **finish, publish, or discard** that draft before starti
 9. **End with \`summarize_schema_draft_for_review\` + \`get_schema_change_plan\`** — flag unexpected \`remove_field\` ops.
 10. **Tell the user to publish** in Apito Console → Project Settings → Schema Changes.
 11. **After publish** — \`get_schema_preview({ source: "live" })\` and spot-check nested paths.
+12. **After publish / when CRUD fails** — call \`get_model_physical_health\` before guessing VPS sqlite. Logical schema can look healthy while the physical table is an \`id\`-only stub.
 
 ---
 
@@ -68,6 +69,7 @@ If \`has_draft: true\`, **finish, publish, or discard** that draft before starti
 8. **Don't migrate data** with schema tools — \`upsert_data\` / \`get_data\` need **live** published models/columns.
 9. **Don't re-add fields** that exist only in a staged delete — publish or discard the draft first.
 10. **Don't ignore \`get_schema_change_plan\`** — accidental \`remove_field\` ops destroy production columns on publish.
+11. **Don't run remote DDL via MCP** — there is no MCP tool for \`ALTER\` / \`DROP\` / \`runModelMigrations\`. If \`get_model_physical_health\` reports drift, tell the user to repair via Console Schema publish or Studio ops.
 
 ---
 
@@ -125,6 +127,22 @@ Staged as \`remove_field\` in changeset — **not applied to live until publish*
 | Nested empty in \`get_model_schema\` | Shallow tool limitation | \`get_schema_preview\` — do **not** delete/re-add |
 | Publish stuck / duplicate column | Bootstrap drift or op ordering | Review \`get_schema_change_plan\`; ensure \`add_model\` before \`add_field\`; republish may skip existing columns |
 | Corrupted draft | Parallel ops or bad batch | Discard draft; restart model batch sequentially |
+| \`no such column\` / \`no such table\` on \`list_data\` / \`upsert_data\` | Physical table missing or stub (\`id\` only) vs published fields | Call **\`get_model_physical_health\`** (or \`get_project_physical_health\`). Report drift to the user. **Do not** attempt remote DDL via MCP — repair is Console publish / Studio ops |
+
+---
+
+## Physical schema health (read-only)
+
+Logical schema (\`get_model_schema\` / \`projectModelsInfo\`) can be complete while the **physical** table still has only \`id\` (stub from incomplete migration).
+
+| Tool | Use when |
+|------|----------|
+| \`get_model_physical_health\` | After \`create_model\` / publish, or when CRUD returns \`no such column\` / \`no such table\` — **before** any VPS sqlite |
+| \`get_project_physical_health\` | Scan many models (base project DB; SaaS common models inspected there only) |
+
+Verdicts: \`ok\` | \`missing_table\` | \`column_drift\`.
+
+**MCP will not apply DDL.** If drift is found, escalate: human repairs via Console Schema Changes publish or Studio VPS/ops, then re-check health.
 
 ---
 
@@ -172,6 +190,7 @@ Migration progress:
 - [ ] summarize_schema_draft_for_review + get_schema_change_plan
 - [ ] User publishes in Console
 - [ ] get_schema_preview(source: live) + nested spot-checks
+- [ ] get_model_physical_health (or project scan) — escalate DDL drift to human, never MCP
 \`\`\`
 
 ### Dependency order (template — adjust per project)
@@ -232,10 +251,11 @@ One \`add_relation\` = bidirectional edge. **One** \`delete_relation\` removes b
 |-------|-------|
 | Start | \`get_schema_migration_guide\`, \`get_project_context\`, \`get_schema_versioning_status\`, \`get_saas_model_guide\` |
 | Discover | \`list_models\`, \`get_relation_graph\`, \`get_schema_preview(source: live)\` |
-| Mutate | \`create_model\`, \`add_field\`, \`update_field\`, \`delete_field\`, \`add_relation\` — **sequential** |
+| Mutate | \`create_model\`, \`add_field\`, \`update_field\`, \`rename_field\`, \`rename_model\`, \`delete_field\`, \`add_relation\` — **sequential** |
 | Verify | \`get_schema_preview\`, \`get_effective_schema\`, \`get_schema_change_plan\` |
 | Handoff | \`summarize_schema_draft_for_review\` → user publishes in Console |
-| Post-publish | \`get_schema_preview(source: live)\`, \`get_schema_versioning_status\` |
+| Post-publish | \`get_schema_preview(source: live)\`, \`get_schema_versioning_status\`, \`get_model_physical_health\` / \`get_project_physical_health\` |
+| CRUD SQL errors | \`get_model_physical_health\` first → escalate DDL repair to human (never MCP) |
 
 ---
 
@@ -255,6 +275,7 @@ You migrate Apito schemas via Apito DB MCP.
 9. delete_field on nested fields requires parent_field (immediate parent).
 10. summarize_schema_draft_for_review; user publishes in Console.
 11. After publish, verify get_schema_preview source=live. No data or plugins in scope.
+12. On no such column/table, call get_model_physical_health before VPS sqlite. MCP never applies DDL — escalate repair to Console/Studio.
 \`\`\`
 
 ---

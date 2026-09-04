@@ -18,6 +18,7 @@
     "test:naming": "tsx test-naming.ts",
     "test:inspect-access-token": "tsx test-inspect-access-token.ts",
     "test:system-logs": "tsx test-system-logs.ts",
+    "test:physical-health": "tsx test-physical-health.ts",
     "playground:mcp": "tsx playground-mcp.ts",
     "start": "node dist/index.js"
   },

@@ -509,6 +509,24 @@ Get the complete schema for a model including all fields and their types. Option
 - `model_name` (required): Name of the model to get schema for
 - `source` (optional): `live`, `draft`, or `effective`
 
+### `get_model_physical_health`
+
+Read-only: compare published logical fields to physical table columns on the **base project DB**. Use when `list_data` / `upsert_data` fail with `no such column` / `no such table`, or after publish. Returns verdict `ok` | `missing_table` | `column_drift`.
+
+**MCP never applies DDL.** If drift is found, tell the user to repair via Console Schema publish or Studio ops.
+
+**Arguments:**
+
+- `model_name` (required)
+
+### `get_project_physical_health`
+
+Same check for many models (omit `model_names` to scan all, capped). Summarizes ok vs drifting models.
+
+**Arguments:**
+
+- `model_names` (optional): array of model names
+
 ### `get_project_query_structure`
 
 Get the Apito project GraphQL query structure: which operations exist for each model. Apito uses a consistent naming convention: for model `Task` you get `task(_id)`, `taskList`, `taskListCount`, `createTask`, `updateTask`, `deleteTask`, `upsertTaskList`. **CamelCase matters** — model names are converted to camelCase for operation names.

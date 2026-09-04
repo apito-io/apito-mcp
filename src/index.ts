@@ -38,6 +38,12 @@ import {
     type PublicGraphqlModelMap,
 } from './apito-naming.js';
 import { executeProbePublicDocument } from './public-graphql.js';
+import {
+    formatModelPhysicalHealth,
+    formatProjectPhysicalHealth,
+    physicalHealthVerdict,
+    type ModelPhysicalHealth,
+} from './physical-health.js';
 
 const SOURCE_PARAM_SCHEMA = {
     type: 'string',
@@ -681,6 +687,44 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                     },
                 },
                 {
+                    name: 'get_model_physical_health',
+                    description:
+                        'Read-only: compare published logical fields to physical table columns on the base project DB. Use when list_data/upsert_data fail with "no such column" / "no such table", or after create_model/publish. Returns verdict ok | missing_table | column_drift. **MCP never applies DDL** — if drift, tell the user to repair via Console/Studio ops.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Model name (e.g. app_release_policy)',
+                            },
+                            project_id: {
+                                type: 'string',
+                                description: 'Exact project ID. Required unless a configured default is used for a read.',
+                            },
+                        },
+                        required: ['model_name'],
+                    },
+                },
+                {
+                    name: 'get_project_physical_health',
+                    description:
+                        'Read-only: physical health for many models (base project DB). Omit model_names to scan all (capped). Summarizes ok vs drifting. **MCP never applies DDL.**',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_names: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'Optional subset of model names; empty/omit = all models (capped)',
+                            },
+                            project_id: {
+                                type: 'string',
+                                description: 'Exact project ID. Required unless a configured default is used for a read.',
+                            },
+                        },
+                    },
+                },
+                {
                     name: 'get_saas_model_guide',
                     description:
                         'SaaS model classification guide: tenant-scoped vs common (project-wide) models, when to use each, examples (app release policy, hospital medicine catalog), and how is_common_model affects queries and inserts. Read this before create_model on SaaS projects.',
@@ -1067,6 +1111,10 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                         return await this.handleListModels(args as any);
                     case 'get_model_schema':
                         return await this.handleGetModelSchema(args as any);
+                    case 'get_model_physical_health':
+                        return await this.handleGetModelPhysicalHealth(args as any);
+                    case 'get_project_physical_health':
+                        return await this.handleGetProjectPhysicalHealth(args as any);
                     case 'get_project_context':
                         return await this.handleGetProjectContext();
                     case 'get_saas_model_guide':
@@ -2503,6 +2551,60 @@ Use the \`get_project_query_structure\` tool to get the mapping for your project
         };
     }
 
+    private async handleGetModelPhysicalHealth(args: { model_name: string }) {
+        if (!args.model_name?.trim()) {
+            return {
+                content: [{ type: 'text', text: 'model_name is required' }],
+                isError: true,
+            };
+        }
+        const raw = (await this.client!.getModelPhysicalHealth(args.model_name.trim())) as ModelPhysicalHealth;
+        const verdict = physicalHealthVerdict(raw);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text:
+                        formatModelPhysicalHealth(raw) +
+                        `\n\nJSON:\n` +
+                        JSON.stringify({ verdict, ...raw }, null, 2),
+                },
+            ],
+        };
+    }
+
+    private async handleGetProjectPhysicalHealth(args: { model_names?: string[] } = {}) {
+        const names = Array.isArray(args.model_names)
+            ? args.model_names.filter((n) => typeof n === 'string' && n.trim()).map((n) => n.trim())
+            : undefined;
+        const rows = (await this.client!.getProjectPhysicalHealth(names)) as ModelPhysicalHealth[];
+        const drifting = rows.filter((r) => physicalHealthVerdict(r) !== 'ok');
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text:
+                        formatProjectPhysicalHealth(rows) +
+                        `\n\nJSON summary:\n` +
+                        JSON.stringify(
+                            {
+                                checked: rows.length,
+                                ok: rows.length - drifting.length,
+                                drifting: drifting.map((r) => ({
+                                    model_name: r.model_name,
+                                    verdict: physicalHealthVerdict(r),
+                                    missing_columns: r.missing_columns,
+                                    warnings: r.warnings,
+                                })),
+                            },
+                            null,
+                            2
+                        ),
+                },
+            ],
+        };
+    }
+
     private getSaaSModelClassificationGuideContent(): string {
         return `# Apito SaaS model classification (common vs tenant-scoped)
 
@@ -2573,6 +2675,7 @@ Metadata-only \`is_common_model\` updates apply **immediately** on pro engines (
 
 - \`list_models\` — shows \`common (project-wide)\`, \`tenant-scoped\`, or \`tenant catalogue\` per model.
 - \`get_model_schema\` — JSON includes \`is_common_model\` when available.
+- \`get_model_physical_health\` — after publish or when CRUD fails with \`no such column\` / \`no such table\`, compare logical fields to physical columns on the **base project DB** (common models live there). **MCP never applies DDL**; if drift, tell the user to repair via Console/Studio ops.
 
 ## Shared database vs separate DB per tenant
 

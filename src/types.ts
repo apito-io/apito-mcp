@@ -154,6 +154,7 @@ export interface TenantListItem {
     data?: string;
     domain?: string;
     status?: string;
+    plan_tier?: string;
 }
 
 export interface AppUserItem {
@@ -181,6 +182,24 @@ export interface ProjectRole {
     logic_executions?: string[];
     administrative_permissions?: string[];
     system_generated?: boolean;
+}
+
+/** Tenant SaaS plan ceiling (project.Plans), not hosting/Paddle plans. */
+export interface ProjectPlan {
+    id?: string;
+    name?: string;
+    description?: string;
+    api_permissions?: Record<string, unknown>;
+    logic_executions?: string[];
+    quotas?: Record<string, number>;
+    system_generated?: boolean;
+    currency?: string;
+    price_monthly?: number;
+    play_product_id?: string;
+    play_base_plan_id?: string;
+    paddle_price_id?: string;
+    prices?: Array<{ currency: string; amount: number; default?: boolean }>;
+    provider_products?: Array<{ provider: string; product_id: string; variant_id?: string }>;
 }
 
 export interface SchemaVersionItem {

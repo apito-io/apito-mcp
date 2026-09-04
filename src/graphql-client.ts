@@ -752,6 +752,53 @@ export class ApitoGraphQLClient {
     return result.deleteModelData;
   }
 
+  async getModelPhysicalHealth(modelName: string): Promise<Record<string, unknown>> {
+    const query = `
+      query ModelPhysicalHealth($model_name: String!) {
+        modelPhysicalHealth(model_name: $model_name) {
+          model_name
+          table_exists
+          physical_columns
+          expected_columns
+          missing_columns
+          extra_columns
+          is_common_model
+          warnings
+        }
+      }
+    `;
+    const result = await this.execute<{ modelPhysicalHealth: Record<string, unknown> }>(query, {
+      model_name: modelName,
+    });
+    return result.modelPhysicalHealth ?? {};
+  }
+
+  async getProjectPhysicalHealth(modelNames?: string[]): Promise<Record<string, unknown>[]> {
+    const query = `
+      query ProjectPhysicalHealth($model_names: [String!]) {
+        projectPhysicalHealth(model_names: $model_names) {
+          model_name
+          table_exists
+          physical_columns
+          expected_columns
+          missing_columns
+          extra_columns
+          is_common_model
+          warnings
+        }
+      }
+    `;
+    const variables: Record<string, unknown> = {};
+    if (modelNames && modelNames.length > 0) {
+      variables.model_names = modelNames;
+    }
+    const result = await this.execute<{ projectPhysicalHealth: Record<string, unknown>[] }>(
+      query,
+      variables
+    );
+    return result.projectPhysicalHealth ?? [];
+  }
+
   async getSchemaVersioningStatus(): Promise<SchemaVersioningStatus> {
     const query = `
       query SchemaVersioningStatus {

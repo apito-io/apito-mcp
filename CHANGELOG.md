@@ -39,6 +39,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/upsert-kisti-plans.ts`** — Free + Pro (`paid`) for `kisti_mvtgi` with
+  `provider_products` → `kisti_pro_monthly` (requires Studio Plan monetization fields).
+
+### Docs
+
+- Engine 2026-08-11: idle tenant catalog / settings / bulk deletes are Console + system GraphQL. MCP tenant tools unchanged; no required bump for Protiva/Rosna.
+
 ## [1.7.0] - 2026-08-09
 
 ### Added — Public GraphQL surface + access-token inspect

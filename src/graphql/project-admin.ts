@@ -1,5 +1,10 @@
 import type { ApitoGraphQLClient, GraphQLRequestOptions } from '../graphql-client.js';
-import type { ProjectRole, SchemaChangeEventItem, SchemaVersionItem } from '../types.js';
+import type {
+  ProjectPlan,
+  ProjectRole,
+  SchemaChangeEventItem,
+  SchemaVersionItem,
+} from '../types.js';
 
 const GET_PROJECT_ROLES = `
   query GetProjectRoles {
@@ -100,6 +105,76 @@ const DELETE_ROLE = `
   mutation DeleteRoleFromProject($role: String!) {
     deleteRoleFromProject(role: $role) {
       message
+    }
+  }
+`;
+
+const GET_PROJECT_PLANS = `
+  query GetProjectPlans {
+    getProjectPlans {
+      id
+      name
+      description
+      api_permissions
+      logic_executions
+      quotas
+      system_generated
+      currency
+      price_monthly
+      play_product_id
+      play_base_plan_id
+      paddle_price_id
+      prices
+      provider_products
+    }
+  }
+`;
+
+const UPSERT_PLAN = `
+  mutation UpsertPlanToProject(
+    $id: String!
+    $name: String
+    $description: String
+    $api_permissions: JSON
+    $logic_executions: [String]
+    $quotas: JSON
+    $currency: String
+    $price_monthly: Float
+    $play_product_id: String
+    $play_base_plan_id: String
+    $paddle_price_id: String
+    $prices: JSON
+    $provider_products: JSON
+  ) {
+    upsertPlanToProject(
+      id: $id
+      name: $name
+      description: $description
+      api_permissions: $api_permissions
+      logic_executions: $logic_executions
+      quotas: $quotas
+      currency: $currency
+      price_monthly: $price_monthly
+      play_product_id: $play_product_id
+      play_base_plan_id: $play_base_plan_id
+      paddle_price_id: $paddle_price_id
+      prices: $prices
+      provider_products: $provider_products
+    ) {
+      id
+      name
+      description
+      api_permissions
+      logic_executions
+      quotas
+      system_generated
+      currency
+      price_monthly
+      play_product_id
+      play_base_plan_id
+      paddle_price_id
+      prices
+      provider_products
     }
   }
 `;
@@ -336,6 +411,67 @@ export async function deleteRole(
     reqOpts
   );
   return result.deleteRoleFromProject;
+}
+
+export async function listPlans(
+  client: ApitoGraphQLClient,
+  reqOpts?: GraphQLRequestOptions
+): Promise<ProjectPlan[]> {
+  const result = await client.request<{ getProjectPlans: ProjectPlan[] | null }>(
+    GET_PROJECT_PLANS,
+    {},
+    reqOpts
+  );
+  return result.getProjectPlans ?? [];
+}
+
+export async function upsertPlan(
+  client: ApitoGraphQLClient,
+  args: {
+    id: string;
+    name?: string;
+    description?: string;
+    api_permissions?: Record<string, unknown>;
+    logic_executions?: string[];
+    quotas?: Record<string, number>;
+    currency?: string;
+    price_monthly?: number;
+    play_product_id?: string;
+    play_base_plan_id?: string;
+    paddle_price_id?: string;
+    prices?: Array<{ currency: string; amount: number; default?: boolean }>;
+    provider_products?: Array<{ provider: string; product_id: string; variant_id?: string }>;
+  },
+  reqOpts?: GraphQLRequestOptions
+): Promise<ProjectPlan> {
+  const result = await client.request<{ upsertPlanToProject: ProjectPlan }>(
+    UPSERT_PLAN,
+    args,
+    reqOpts
+  );
+  return result.upsertPlanToProject;
+}
+
+const DELETE_PLAN = `
+  mutation DeletePlanFromProject($id: String!) {
+    deletePlanFromProject(id: $id) {
+      id
+      name
+    }
+  }
+`;
+
+export async function deletePlan(
+  client: ApitoGraphQLClient,
+  id: string,
+  reqOpts?: GraphQLRequestOptions
+): Promise<ProjectPlan[]> {
+  const result = await client.request<{ deletePlanFromProject: ProjectPlan[] | null }>(
+    DELETE_PLAN,
+    { id },
+    reqOpts
+  );
+  return result.deletePlanFromProject ?? [];
 }
 
 export async function listApiKeys(client: ApitoGraphQLClient, reqOpts?: GraphQLRequestOptions) {

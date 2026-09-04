@@ -1,5 +1,15 @@
 # apito-mcp — AI Changelog
 
+## 2026-09-02 — upsert-prottoy-plans.ts
+
+- **Changed:** Added `upsert-prottoy-plans.ts` (Suchok price ladder,
+  lab_order quotas, `prottoy_*` Play SKUs). Default project `prottoy_cjiot`.
+- **Why:** Repeatable parity with Suchok/Protiva/Rosna plan scripts.
+- **Affected:** `apito/apito-mcp/scripts/upsert-prottoy-plans.ts`.
+  Production already upserted via MCP. **Ask before commit.**
+
+---
+
 ## 2026-08-11 — Rosna plan upsert + release-policy seed scripts
 
 - **Changed:** Added `upsert-rosna-plans.ts`,

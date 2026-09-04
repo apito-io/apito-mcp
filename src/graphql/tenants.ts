@@ -10,31 +10,34 @@ const GET_TENANTS = `
         icon
         data
         domain
+        plan_tier
       }
     }
   }
 `;
 
 const CREATE_TENANT = `
-  mutation CreateTenant($name: String!, $data: String, $domain: String) {
-    createTenant(name: $name, data: $data, domain: $domain) {
+  mutation CreateTenant($name: String!, $data: String, $domain: String, $plan_tier: String) {
+    createTenant(name: $name, data: $data, domain: $domain, plan_tier: $plan_tier) {
       id
       name
       status
       data
       domain
+      plan_tier
     }
   }
 `;
 
 const UPDATE_TENANT = `
-  mutation UpdateTenant($tenant_id: String!, $name: String, $data: String, $domain: String) {
-    updateTenant(tenant_id: $tenant_id, name: $name, data: $data, domain: $domain) {
+  mutation UpdateTenant($tenant_id: String!, $name: String, $data: String, $domain: String, $plan_tier: String) {
+    updateTenant(tenant_id: $tenant_id, name: $name, data: $data, domain: $domain, plan_tier: $plan_tier) {
       id
       name
       status
       data
       domain
+      plan_tier
     }
   }
 `;
@@ -64,6 +67,7 @@ const SEARCH_TENANTS_BY_DOMAIN = `
         status
         domain
         data
+        plan_tier
       }
     }
   }
@@ -80,6 +84,7 @@ const SEARCH_TENANTS = `
         domain
         icon
         data
+        plan_tier
         created_at
       }
     }
@@ -100,7 +105,7 @@ export async function listTenants(
 
 export async function createTenant(
   client: ApitoGraphQLClient,
-  args: { name: string; data?: string; domain?: string },
+  args: { name: string; data?: string; domain?: string; plan_tier?: string },
   reqOpts?: GraphQLRequestOptions
 ): Promise<TenantListItem> {
   const result = await client.request<{ createTenant: TenantListItem }>(CREATE_TENANT, args, reqOpts);
@@ -109,7 +114,13 @@ export async function createTenant(
 
 export async function updateTenant(
   client: ApitoGraphQLClient,
-  args: { tenant_id: string; name?: string; data?: string; domain?: string },
+  args: {
+    tenant_id: string;
+    name?: string;
+    data?: string;
+    domain?: string;
+    plan_tier?: string;
+  },
   reqOpts?: GraphQLRequestOptions
 ): Promise<TenantListItem> {
   const result = await client.request<{ updateTenant: TenantListItem }>(UPDATE_TENANT, args, reqOpts);
