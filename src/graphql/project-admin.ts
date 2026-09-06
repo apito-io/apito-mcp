@@ -310,27 +310,43 @@ const UPDATE_STORAGE_SETTINGS = `
 
 const LIST_TEAM_MEMBERS = `
   query ListTeamMembers {
-    teamMembers {
+    workspaceMembers {
       id
       first_name
       last_name
-      project_user
       email
       avatar
-      project_assigned_role
-      project_access_permissions
+      grants {
+        project_id
+        project_name
+        role
+        permissions
+        invite_status
+        invite_expires_at
+      }
     }
   }
 `;
 
-const UPDATE_TEAM_MEMBERS = `
-  mutation UpdateTeamMembers(
-    $add_team_member: AddTeamMemberPayload
-    $remove_team_member: RemoveTeamMemberPayload
+const INVITE_WORKSPACE_MEMBER = `
+  mutation InviteWorkspaceMember(
+    $email: String!
+    $project_ids: [String!]!
+    $administrative_permissions: [String]
+    $make_admin: Boolean
   ) {
-    updateProject(add_team_member: $add_team_member, remove_team_member: $remove_team_member) {
-      id
-    }
+    inviteWorkspaceMember(
+      email: $email
+      project_ids: $project_ids
+      administrative_permissions: $administrative_permissions
+      make_admin: $make_admin
+    )
+  }
+`;
+
+const REMOVE_WORKSPACE_MEMBER = `
+  mutation RemoveWorkspaceMember($user_id: String!, $project_id: String) {
+    removeWorkspaceMember(user_id: $user_id, project_id: $project_id)
   }
 `;
 
@@ -552,24 +568,44 @@ export async function updateStorageSettings(
 }
 
 export async function listTeamMembers(client: ApitoGraphQLClient, reqOpts?: GraphQLRequestOptions) {
-  const result = await client.request<{ teamMembers: unknown[] }>(LIST_TEAM_MEMBERS, {}, reqOpts);
-  return result.teamMembers ?? [];
+  const result = await client.request<{ workspaceMembers: unknown[] }>(LIST_TEAM_MEMBERS, {}, reqOpts);
+  return result.workspaceMembers ?? [];
 }
 
 export async function updateTeamMembers(
   client: ApitoGraphQLClient,
   args: {
-    add_team_member?: Record<string, unknown>;
-    remove_team_member?: Record<string, unknown>;
+    email?: string;
+    project_ids?: string[];
+    administrative_permissions?: string[];
+    make_admin?: boolean;
+    user_id?: string;
+    project_id?: string;
   },
   reqOpts?: GraphQLRequestOptions
 ) {
-  const result = await client.request<{ updateProject: { id: string } }>(
-    UPDATE_TEAM_MEMBERS,
-    args,
+  if (args.user_id) {
+    const result = await client.request<{ removeWorkspaceMember: boolean }>(
+      REMOVE_WORKSPACE_MEMBER,
+      { user_id: args.user_id, project_id: args.project_id },
+      reqOpts
+    );
+    return result.removeWorkspaceMember;
+  }
+  if (!args.email || !args.project_ids?.length) {
+    throw new Error('invite requires email and project_ids; remove requires user_id');
+  }
+  const result = await client.request<{ inviteWorkspaceMember: boolean }>(
+    INVITE_WORKSPACE_MEMBER,
+    {
+      email: args.email,
+      project_ids: args.project_ids,
+      administrative_permissions: args.administrative_permissions,
+      make_admin: args.make_admin,
+    },
     reqOpts
   );
-  return result.updateProject;
+  return result.inviteWorkspaceMember;
 }
 
 const SCHEMA_VERSIONS = `

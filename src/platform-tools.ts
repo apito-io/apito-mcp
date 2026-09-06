@@ -458,17 +458,22 @@ export const PLATFORM_TOOL_DEFINITIONS: PlatformTool[] = [
   },
   {
     name: 'list_team_members',
-    description: '[core] List console team members for the project.',
+    description: '[cloud] List console operators across administrable projects (workspaceMembers).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'update_team_members',
-    description: '[core] Add or remove console team members via updateProject.',
+    description:
+      '[cloud] Invite with email+project_ids, or remove with user_id (optional project_id).',
     inputSchema: {
       type: 'object',
       properties: {
-        add_team_member: { type: 'object' },
-        remove_team_member: { type: 'object' },
+        email: { type: 'string' },
+        project_ids: { type: 'array', items: { type: 'string' } },
+        administrative_permissions: { type: 'array', items: { type: 'string' } },
+        make_admin: { type: 'boolean' },
+        user_id: { type: 'string' },
+        project_id: { type: 'string' },
       },
     },
   },

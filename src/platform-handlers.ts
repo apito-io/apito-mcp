@@ -419,8 +419,12 @@ export async function handlePlatformTool(
         await projectAdmin.updateTeamMembers(
           client,
           {
-            add_team_member: args.add_team_member as Record<string, unknown> | undefined,
-            remove_team_member: args.remove_team_member as Record<string, unknown> | undefined,
+            email: args.email != null ? String(args.email) : undefined,
+            project_ids: args.project_ids as string[] | undefined,
+            administrative_permissions: args.administrative_permissions as string[] | undefined,
+            make_admin: args.make_admin as boolean | undefined,
+            user_id: args.user_id != null ? String(args.user_id) : undefined,
+            project_id: args.project_id != null ? String(args.project_id) : undefined,
           },
           ro
         )
