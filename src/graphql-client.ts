@@ -256,6 +256,7 @@ export class ApitoGraphQLClient {
       newName?: string;
       singlePageModel?: boolean;
       isCommonModel?: boolean;
+      commonModelMigration?: string;
     } = {}
   ): Promise<ApitoModel> {
     const mutation = `
@@ -265,6 +266,7 @@ export class ApitoGraphQLClient {
         $new_name: String
         $single_page_model: Boolean
         $is_common_model: Boolean
+        $common_model_migration: String
       ) {
         updateModel(
           type: $type
@@ -272,6 +274,7 @@ export class ApitoGraphQLClient {
           new_name: $new_name
           single_page_model: $single_page_model
           is_common_model: $is_common_model
+          common_model_migration: $common_model_migration
         ) {
           name
           is_common_model
@@ -294,6 +297,7 @@ export class ApitoGraphQLClient {
     if (options.newName) variables.new_name = options.newName;
     if (options.singlePageModel !== undefined) variables.single_page_model = options.singlePageModel;
     if (options.isCommonModel !== undefined) variables.is_common_model = options.isCommonModel;
+    if (options.commonModelMigration) variables.common_model_migration = options.commonModelMigration;
 
     const result = await this.execute<{ updateModel: ApitoModel }>(
       mutation,
@@ -771,6 +775,23 @@ export class ApitoGraphQLClient {
       model_name: modelName,
     });
     return result.modelPhysicalHealth ?? {};
+  }
+
+  async reconcileCommonModels(modelName?: string): Promise<Record<string, unknown>> {
+    const mutation = `
+      mutation ReconcileCommonModels($model_name: String) {
+        reconcileCommonModels(model_name: $model_name) {
+          promoted
+          shadows_fixed
+          orphans_removed
+          tables_reduced
+        }
+      }
+    `;
+    const result = await this.execute<{ reconcileCommonModels: Record<string, unknown> }>(mutation, {
+      model_name: modelName || null,
+    });
+    return result.reconcileCommonModels ?? {};
   }
 
   async getProjectPhysicalHealth(modelNames?: string[]): Promise<Record<string, unknown>[]> {

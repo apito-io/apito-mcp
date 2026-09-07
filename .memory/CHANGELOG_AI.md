@@ -1,5 +1,14 @@
 # apito-mcp — AI Changelog
 
+## 2026-09-07 — update_model promote-only
+
+- **Changed:** Tool/schema text no longer advertises demoting a
+  common model.
+- **Why:** Demotion is not implemented; operators followed MCP copy.
+- **Affected:** `src/index.ts`. See `apito/.knowledge/features/common-models.md`.
+
+---
+
 ## 2026-09-02 — upsert-prottoy-plans.ts
 
 - **Changed:** Added `upsert-prottoy-plans.ts` (Suchok price ladder,

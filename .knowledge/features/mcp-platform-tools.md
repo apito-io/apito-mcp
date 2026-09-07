@@ -47,6 +47,10 @@ Permission ceiling + quotas assigned to tenants via `plan_tier` slug. Same Graph
 
 `api_permissions` intersect with the app-user role at request time. `quotas.max_records.<model>` is enforced on create.
 
+## Schema `update_model`
+
+`update_model` may set `is_common_model: true` with `common_model_migration: "promote"` only. Demotion is not supported — do not document a reverse strategy. See `apito/.knowledge/features/common-models.md`.
+
 ## Parity checklist (engine release)
 
 When engine adds/changes system GraphQL ops, update:

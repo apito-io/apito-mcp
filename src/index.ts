@@ -528,7 +528,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                 {
                     name: 'update_model',
                     description:
-                        'Update model metadata (not fields). Use `is_common_model` to mark an existing model as project-wide (common) or tenant-scoped on SaaS projects. Metadata-only `is_common_model` updates apply immediately on pro engines (no schema publish required). Also supports `single_page_model`. At least one of is_common_model or single_page_model must be provided.',
+                        'Update model metadata (not fields). Use `is_common_model: true` to promote an existing model to project-wide (common) storage on SaaS projects. Models with rows require `common_model_migration: promote`. Demotion is not supported. Also supports `single_page_model`. At least one of is_common_model or single_page_model must be provided.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -539,7 +539,12 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                             is_common_model: {
                                 type: 'boolean',
                                 description:
-                                    'SaaS: true = common/project-wide model (all tenants share rows, no tenant_id). false = tenant-scoped (default SaaS behavior). See get_saas_model_guide.',
+                                    'SaaS: true = common/project-wide model (one copy in the base project DB). false = tenant-scoped. See get_saas_model_guide.',
+                            },
+                            common_model_migration: {
+                                type: 'string',
+                                description:
+                                    'Required when the model already has rows: "promote" (tenant rows → base + id-only shadows). Demotion is not supported.',
                             },
                             single_page_model: {
                                 type: 'boolean',
@@ -731,6 +736,20 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                     inputSchema: {
                         type: 'object',
                         properties: {},
+                    },
+                },
+                {
+                    name: 'reconcile_common_models',
+                    description:
+                        'Promote tenant copies of common models into the base project DB, reduce tenant tables to id-only shadows, and garbage-collect orphan shadow rows. Use after toggling is_common_model or when physical health shows field columns on a tenant shadow table.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            model_name: {
+                                type: 'string',
+                                description: 'Optional. When set, only this common model is reconciled.',
+                            },
+                        },
                     },
                 },
                 {
@@ -1119,6 +1138,8 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
                         return await this.handleGetProjectContext();
                     case 'get_saas_model_guide':
                         return await this.handleGetSaaSModelGuide();
+                    case 'reconcile_common_models':
+                        return await this.handleReconcileCommonModels(args as any);
                     case 'get_relation_graph':
                         return await this.handleGetRelationGraph(args as any);
                     case 'get_project_query_structure':
@@ -1435,6 +1456,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
     private async handleUpdateModel(args: {
         model_name: string;
         is_common_model?: boolean;
+        common_model_migration?: string;
         single_page_model?: boolean;
     }) {
         if (args.is_common_model === undefined && args.single_page_model === undefined) {
@@ -1445,6 +1467,7 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
 
         const model = await this.client!.updateModel('update', args.model_name, {
             isCommonModel: args.is_common_model,
+            commonModelMigration: args.common_model_migration,
             singlePageModel: args.single_page_model,
         });
 
@@ -2006,6 +2029,18 @@ For nested subfields, set parent_field (immediate parent only) and is_object_fie
     private async handleGetSaaSModelGuide() {
         return {
             content: [{ type: 'text' as const, text: this.getSaaSModelClassificationGuideContent() }],
+        };
+    }
+
+    private async handleReconcileCommonModels(args: { model_name?: string }) {
+        const result = await this.client!.reconcileCommonModels(args?.model_name);
+        return {
+            content: [
+                {
+                    type: 'text' as const,
+                    text: `reconcileCommonModels\n\n${JSON.stringify(result, null, 2)}`,
+                },
+            ],
         };
     }
 
@@ -2664,12 +2699,13 @@ If a model was created without the flag but should be project-wide:
 
 \`\`\`
 update_model({
-  model_name: "app_release_policy",
-  is_common_model: true
+  model_name: "medicine",
+  is_common_model: true,
+  common_model_migration: "promote"
 })
 \`\`\`
 
-Metadata-only \`is_common_model\` updates apply **immediately** on pro engines (no schema publish required).
+Then call \`reconcile_common_models\` if tenant tables still have field columns. Toggling is blocked when rows exist and no migration strategy is supplied.
 
 ### Inspect scope
 
@@ -2681,8 +2717,26 @@ Metadata-only \`is_common_model\` updates apply **immediately** on pro engines (
 
 Check \`get_project_context\`:
 
-- \`per_tenant_separate_database: false\` (**shared DB**) — \`is_common_model\` is **critical**. Wrong scope causes SQL errors (\`no such column: tenant_id\`) or wrong isolation.
-- \`per_tenant_separate_database: true\` — each tenant has its own database; scope still affects filters and public API shape, but physical layout differs.
+- \`per_tenant_separate_database: false\` (**shared DB**) — \`is_common_model\` is **critical**. Wrong scope causes SQL errors (\`no such column: tenant_id\`) or wrong isolation. Common rows live in the same database without a tenant_id filter.
+- \`per_tenant_separate_database: true\` — **one physical copy of common-model field data lives in the base project DB**. Tenant DBs hold **id-only shadow rows**, created lazily on first \`connect\`, so local FKs and JOINs still resolve. Every create/update/delete of a common row is **O(1)** (base only). Relation reads JOIN locally then **hydrate field values from base**.
+
+### Storage-scope contract (per-tenant separate DB)
+
+| Relation | Where data lives | Allowed? |
+|----------|------------------|----------|
+| common → common | FK/pivot in **base** | yes |
+| tenant → tenant | tenant DB | yes |
+| tenant → common (e.g. \`stock\` → \`medicine\`) | FK on the **tenant** table, pointing at a local shadow id | yes |
+| common → tenant with FK on the common side | — | **rejected** (base copy cannot hold a per-tenant value) |
+| mixed many-to-many | pivot is **tenant-local**, skipped from base DDL | yes |
+
+Delete of a common row is a **base-authoritative soft delete**. Orphan shadows are harmless and reclaimed by \`reconcile_common_models\`.
+
+Filtering a tenant model by a common model's **field** values is two-phase: resolve matching ids in base, then \`IN (...)\` on the tenant query. Existence/\`_id\` filters stay native JOINs.
+
+### Toggle / migration
+
+\`update_model({ is_common_model: true })\` on a model that already has rows requires \`common_model_migration: "promote"\` (copies tenant rows to base and reduces tenant tables to shadows). Use \`reconcile_common_models\` to repair missing shadows or leftover field columns.
 
 ## Tenant routing (separate from model scope)
 
