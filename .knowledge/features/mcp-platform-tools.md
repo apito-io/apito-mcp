@@ -51,6 +51,8 @@ Permission ceiling + quotas assigned to tenants via `plan_tier` slug. Same Graph
 
 `update_model` may set `is_common_model: true` with `common_model_migration: "promote"` only. Demotion is not supported — do not document a reverse strategy. See `apito/.knowledge/features/common-models.md`.
 
+`create_model` / `update_model` **re-read** `projectModelsInfo` after the mutation. The GraphQL payload often echoes `is_common_model: false` even when `Ext` persisted. If the requested flag is missing, MCP promotes and fails the tool if verification still fails. The flag applies on **SaaS and general** projects (Console previously hid the Common Model switch when `project_type !== saas`).
+
 ## Parity checklist (engine release)
 
 When engine adds/changes system GraphQL ops, update:
@@ -60,4 +62,4 @@ When engine adds/changes system GraphQL ops, update:
 3. `CHANGELOG.md`, `.knowledge/features/mcp-platform-tools.md`
 4. `test-tenant-users.ts`
 
-Last Updated: 2026-08-10
+Last Updated: 2026-09-16
